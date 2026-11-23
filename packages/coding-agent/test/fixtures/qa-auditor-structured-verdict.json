@@ -1,0 +1,41 @@
+{
+	"requirements": [
+		{
+			"id": "R7",
+			"raw_words": "Answer to toolu_01MSMt8egW8z74G9WhPAb8gm [D1]: не может прыгать больше своего размера за кадр или чёт такое?\nAnswer to toolu_01MSMt8egW8z74G9WhPAb8gm [D2]: Ride with anchor\nAnswer to toolu_01MSMt8egW8z74G9WhPAb8gm [D3]: Arrival only\nAnswer to toolu_01MSMt8egW8z74G9WhPAb8gm [D4]: Physics births, no snap",
+			"verdict": "unverifiable",
+			"evidence": "Headless module evidence only. `caps each janky painted-frame own-offset step at the plaque size` (src/__tests__/plaquePhysics.test.ts:87–93) runner output: `D1 janky-frame own step { dt: 0.099, ownStep: 4.979405320474135 }` and `{ dt: 0.5, ownStep: 4.979405320474135 }`. `keeps offset unchanged through a 29 px projected-anchor shift` (file:67–84) checks the plaque rides with its anchor. Arrival checks are in six-trace and recorded-fixture tests (file:276–303, 460–489); run summary: `Tests 57 passed | 2 expected fail (59)`. `births at the nearest legal grid point rather than a farther boundary candidate` (file:87–93) verifies `{ x: 150, y: 129 }`, but does not check the ideal-if-free birth case. R7 combines that uncovered birth behavior with covered clauses; overall unverifiable.",
+			"artifact_identity": "\"Prove stepPlaques headless on six traces\" @ 9f1354b98e9fab49454bba1a4e65322cfbcf3664"
+		},
+		{
+			"id": "R8",
+			"raw_words": "Answer to toolu_01KWvnFxbw8MVdQ6Mr3ipYH1 [D5]: Deterministic WKB",
+			"verdict": "unverifiable",
+			"evidence": "Headless module evidence only. `reflects zero energy and shares the reduced-mass transmission decision` (src/__tests__/plaquePhysics.test.ts:95–99) checks threshold values. `retargets inside an earned tunnel without keeping a stale token / …` (file:374–415) enforces episode duration <=.7 s and <=42 frames across schedules. Runner output: `R5 episode maxima { seconds: 0.14537037037037048, frames: 19 }`; summary: `Tests 57 passed | 2 expected fail (59)`. These checks do not directly establish deterministic behavior or one symmetric decision per pair.",
+			"artifact_identity": "\"Prove stepPlaques headless on six traces\" @ 9f1354b98e9fab49454bba1a4e65322cfbcf3664"
+		},
+		{
+			"id": "R9",
+			"raw_words": "Answer to toolu_01E4vax2BbUGsiPEszhdwXdd [D6]: Own motion only",
+			"verdict": "pass",
+			"evidence": "Headless module evidence only. Six-trace runner output for `c Carrier anchor shift`: across 30, 60, and 120 Hz, 16/33/50ms, and 20Hz, `offsetStep: 0`, `paintedStep: 29.211480710267967`, `verdict: 'PASS'`. Own-offset and painted-step computations are in src/__tests__/plaquePhysics.test.ts:257–261. Runner summary: `Tests 57 passed | 2 expected fail (59)`.",
+			"artifact_identity": "\"Prove stepPlaques headless on six traces\" @ 9f1354b98e9fab49454bba1a4e65322cfbcf3664"
+		},
+		{
+			"id": "R10",
+			"raw_words": "look you can also A* the pixel route to perfect destination and use that as reference direction instead of straight line to perfect location",
+			"verdict": "unverifiable",
+			"evidence": "Headless module evidence only. `retains its path corridor, not waypoints, and reroutes when equipment changes` (src/__tests__/plaquePhysics.test.ts:100–128) and `points along the look-ahead tangent before reaching a polyline vertex` (file:130–139) exercise routes and route-tangent direction, but do not establish that an A* pixel route is the reference direction. Run summary: `Tests 57 passed | 2 expected fail (59)`.",
+			"artifact_identity": "\"Prove stepPlaques headless on six traces\" @ 9f1354b98e9fab49454bba1a4e65322cfbcf3664"
+		}
+	],
+	"head": "9f1354b98e9fab49454bba1a4e65322cfbcf3664",
+	"runner_line": "Tests 57 passed | 2 expected fail (59)",
+	"retro": [
+		"Repeated: audited exact detached artifact; npm ci and specified headless Vitest run completed.",
+		"Failed: no suite evidence for deterministic/symmetric WKB decisions or A* reference direction.",
+		"Blocked: R7 ideal-if-free birth behavior also lacks direct evidence; mounted-scene UI is outside scope.",
+		"Receipt: SHA 9f1354b98e9fab49454bba1a4e65322cfbcf3664; npx vitest run src/__tests__/plaquePhysics.test.ts --project unit --reporter verbose → Tests 57 passed | 2 expected fail (59); detached worktree removed.",
+		"Is there a much simpler different way?"
+	]
+}

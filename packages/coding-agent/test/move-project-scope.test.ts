@@ -169,7 +169,13 @@ describe("/move re-scopes project-discovered capabilities", () => {
 			const manager = mcpManager!;
 			const tools = () => live.getAllToolNames();
 			const hasMcpProbe = (label: string) => tools().some(name => name.endsWith(`${label}_probe`));
-			const taskDescription = () => live.getToolByName("task")?.description ?? "";
+			// Fork: the agent catalog lives in the task tool's project-scoped instructions, not its schema description.
+			const taskDescription = () => {
+				const task = live.getToolByName("task") as
+					| { description?: string; projectInstructions?: string }
+					| undefined;
+				return `${task?.description ?? ""}\n${task?.projectInstructions ?? ""}`;
+			};
 			// MCP servers connect in the background, after the startup window and after `/move`'s reload,
 			// so the test waits for those connects themselves, with no deadline of its own: its verdict is
 			// what connected, not whether a loaded machine started a server within some time.

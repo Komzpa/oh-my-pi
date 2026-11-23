@@ -532,11 +532,38 @@ describe("advisor tool-call loop guard", () => {
 		if (!session) throw new Error("Expected live session");
 		const live = session;
 		activateTodoTool(live, tempDir.path());
-		live.setTodoPhases([{ name: "Work", tasks: [{ content: "Finish the migration", status: "in_progress" }] }]);
+		// Keep planning valid: this case isolates the completion reminder, not
+		// the separate mid-run nudge for an unscheduled TODO.
+		live.setTodoPhases([
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Finish the migration",
+						status: "in_progress",
+						schedule: {
+							dependencies: [],
+							estimate: {
+								optimisticSeconds: 1,
+								likelySeconds: 2,
+								pessimisticSeconds: 3,
+								confidence: "high",
+								basis: "One remaining fixture operation",
+								updatedAt: Date.now(),
+							},
+						},
+					},
+				],
+			},
+		]);
 		const reminderRunEnded = Promise.withResolvers<void>();
 		let reminded = false;
+		let reminders = 0;
 		live.subscribe(event => {
-			if (event.type === "todo_reminder") reminded = true;
+			if (event.type === "todo_reminder") {
+				reminded = true;
+				reminders++;
+			}
 			if (event.type === "agent_end" && reminded) reminderRunEnded.resolve();
 		});
 
@@ -547,8 +574,28 @@ describe("advisor tool-call loop guard", () => {
 		// The first final yield was reviewed; the reminder resumed the run, and
 		// its own final yield is reviewed too rather than treated like an
 		// advisor-started continuation.
+		expect(reminders).toBe(1);
+		expect(live.agent.state.messages.filter(message => message.role === "assistant")).toHaveLength(2);
+		expect(
+			live.agent.state.messages.some(
+				message => message.role === "custom" && message.customType === "mid-run-todo-nudge",
+			),
+		).toBe(false);
 		expect(reviewStarts).toHaveLength(2);
-		expect(JSON.stringify(reviewStarts[1]!.messages)).toContain("incomplete todo");
+		const reminder = live.agent.state.messages.find(message => message.role === "developer");
+		if (!reminder || reminder.role !== "developer") throw new Error("Expected the completion reminder");
+		const reminderText =
+			typeof reminder.content === "string"
+				? reminder.content
+				: reminder.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
+		const reviewedText = reviewStarts[1]!.messages
+			.map(message =>
+				typeof message.content === "string"
+					? message.content
+					: message.content.map(part => (part.type === "text" ? part.text : "")).join("\n"),
+			)
+			.join("\n");
+		expect(reviewedText).toContain(reminderText.trim());
 	});
 
 	it("merges simultaneous terminal blockers into one continuation turn", async () => {

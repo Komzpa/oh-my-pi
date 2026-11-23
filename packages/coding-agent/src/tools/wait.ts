@@ -113,9 +113,11 @@ function handOffMail(messaging: WaitMessaging, woke?: IrcMessage): Promise<void>
  * message, steering, or a completion notice. Not `useless`: the loop guard
  * must count it as progress, not an idle poll.
  */
-function interruptedResult(): AgentToolResult<CoordinationDetails> {
+function interruptedResult(restart = false): AgentToolResult<CoordinationDetails> {
 	return {
-		content: [{ type: "text", text: "Wait interrupted by message." }],
+		content: [
+			{ type: "text", text: restart ? "Wait interrupted for session restart." : "Wait interrupted by message." },
+		],
 		details: { op: "wait", jobs: [], interrupted: true },
 	};
 }
@@ -344,6 +346,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		// Any wait ends the idle streak unless its window elapses too (`#elapsed`).
 		const idle = this.#idle;
 		this.#idle = undefined;
+		const drainSignal = this.session.getRestartDrainSignal?.();
+		if (drainSignal) signal = signal ? AbortSignal.any([signal, drainSignal]) : drainSignal;
 		const registry = this.session.agentRegistry;
 		const senderId = this.session.getAgentId?.() ?? undefined;
 		const messaging = registry && senderId ? { registry, senderId } : undefined;
@@ -352,6 +356,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const callStartedAt = Date.now();
 		const manager = this.session.asyncJobManager;
 		const settledAtEntry = manager ? settledJobIds(manager, senderId) : undefined;
+		// A running task job is already listed on its TODO row (or under "unassigned workers") once a real plan exists.
+		const todoTracksTasks = (this.session.getTodoPhases?.() ?? []).some(phase => phase.tasks.length > 0);
 
 		const handOff = messaging && handOffMail(messaging);
 		if (handOff) {
@@ -381,10 +387,19 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		// wait watched it) is exactly what this wait is for: return it now.
 		const undelivered = manager ? undeliveredJobs(manager, senderId) : [];
 		if (manager && undelivered.length > 0) {
-			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], [], [], {
-				startedAtMs: callStartedAt,
-				settledAtEntry,
-			});
+			return buildJobResult(
+				this.session,
+				manager,
+				"wait",
+				[...undelivered, ...jobs],
+				[],
+				[],
+				{
+					startedAtMs: callStartedAt,
+					settledAtEntry,
+				},
+				todoTracksTasks,
+			);
 		}
 		const serviceRunning = hasLiveOwnedService(this.session);
 		const cycle = messaging && !serviceRunning ? watchedAgentBlockedOnCaller(messaging, jobs) : undefined;
@@ -439,6 +454,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 			signal,
 			onUpdate,
 			startedAtMs: callStartedAt,
+			todoTracksTasks,
 			settledAtEntry,
 		});
 	}
@@ -455,12 +471,24 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		idle: IdleStreak | undefined;
 		signal: AbortSignal | undefined;
 		onUpdate: AgentToolUpdateCallback<CoordinationDetails> | undefined;
+		todoTracksTasks: boolean;
 		/** Epoch ms when the enclosing `wait` call started; see {@link JobResultOptions.startedAtMs}. */
 		startedAtMs: number;
 		/** Jobs already settled when this call started; see {@link JobResultOptions.settledAtEntry}. */
 		settledAtEntry: ReadonlySet<string> | undefined;
 	}): Promise<AgentToolResult<CoordinationDetails>> {
-		const { jobs, manager, messaging, serviceRunning, idle, signal, onUpdate, startedAtMs, settledAtEntry } = args;
+		const {
+			jobs,
+			manager,
+			messaging,
+			serviceRunning,
+			idle,
+			signal,
+			onUpdate,
+			todoTracksTasks,
+			startedAtMs,
+			settledAtEntry,
+		} = args;
 		const streak = idle && Date.now() - idle.endedAt < WAIT_LADDER_RESET_MS ? idle : undefined;
 		const watchedIds = jobs.map(job => job.id);
 		manager?.watchJobs(watchedIds);
@@ -522,7 +550,21 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 			message: replyWait,
 		});
 		const { promise: timeout, resolve: timedOut } = Promise.withResolvers<void>();
-		const timer = setTimeout(timedOut, span.ms);
+		// A queued question has not reached a recipient turn yet. Do not turn
+		// delivery delay into repeated "no reply" results (or a worker abort).
+		// Re-check on each window: a departure/block change still ends the wait,
+		// and once delivery is consumed the ordinary bounded wait applies again.
+		let timer: Timer;
+		const checkTimeout = () => {
+			const awaitingDelivery =
+				replyWait &&
+				pendingReplies(messaging).from.some(id =>
+					messaging.registry.get(id)?.session?.hasQueuedIrcFrom(messaging.senderId),
+				);
+			if (awaitingDelivery) timer = setTimeout(checkTimeout, span.ms);
+			else timedOut();
+		};
+		timer = setTimeout(checkTimeout, span.ms);
 		const abort = Promise.withResolvers<void>();
 		const onAbort = () => abort.resolve();
 		if (signal) {
@@ -532,7 +574,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const emitProgress = () =>
 			onUpdate?.({
 				content: [{ type: "text", text: "" }],
-				details: { op: "wait", jobs: snapshotJobs(this.session, jobs) },
+				details: { op: "wait", jobs: snapshotJobs(this.session, jobs), todoTracksTasks },
 			});
 		const progressTimer = onUpdate && jobs.length > 0 ? setInterval(emitProgress, PROGRESS_INTERVAL_MS) : undefined;
 		if (jobs.length > 0) emitProgress();
@@ -583,14 +625,24 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				// Steering, a peer IRC, or a completion notice cut the wait short:
 				// the designed wake path, so the message injects after a normal
 				// result. Any other abort stops the run.
-				if (signal.reason === TOOL_INTERRUPT_ABORT_REASON) return interruptedResult();
+				if (signal.reason === TOOL_INTERRUPT_ABORT_REASON)
+					return interruptedResult(this.session.getRestartDrainSignal?.().aborted === true);
 				throwIfAborted(signal);
 			}
 			if (manager && jobs.length > 0) {
-				const result = buildJobResult(this.session, manager, "wait", jobs, [], [], {
-					startedAtMs,
-					settledAtEntry,
-				});
+				const result = buildJobResult(
+					this.session,
+					manager,
+					"wait",
+					jobs,
+					[],
+					[],
+					{
+						startedAtMs,
+						settledAtEntry,
+					},
+					todoTracksTasks,
+				);
 				if (wake === "timeout") {
 					// The report is one text block (`buildJobResult`); the timeout line joins it.
 					const report = result.content.find(block => block.type === "text")?.text ?? "";

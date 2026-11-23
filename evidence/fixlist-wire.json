@@ -1,0 +1,116 @@
+{
+  "model": "gpt-6.1-sol",
+  "provider": "codex-lb",
+  "before": {
+    "model": "gpt-6.1-sol",
+    "input": [
+      {
+        "type": "function_call",
+        "call_id": "call_probe",
+        "name": "todo",
+        "arguments": "{}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_probe",
+        "output": "FIX NOW: 1. Staff «Cooling» (overdue 6m); 2. Push «Push branch»; 3. Repair refused staffing for «Power»; 4. Staff «Frame»"
+      },
+      {
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Agent gate"
+          }
+        ]
+      },
+      {
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Hook gate"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<system-notice>\nUser interjection during work: priority; supersedes conflicting prior instructions. Re-read; ensure current work reflects user intent.\n</system-notice>\nOwner steering"
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "prompt_cache_key": "offline",
+    "store": false,
+    "include": [
+      "reasoning.encrypted_content"
+    ]
+  },
+  "after": {
+    "model": "gpt-6.1-sol",
+    "input": [
+      {
+        "type": "function_call",
+        "call_id": "call_probe",
+        "name": "todo",
+        "arguments": "{}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_probe",
+        "output": "FIX NOW: 1. Staff «Cooling» (overdue 6m); 2. Push «Push branch»; 3. Repair refused staffing for «Power»; 4. Staff «Frame»"
+      },
+      {
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Agent gate"
+          }
+        ]
+      },
+      {
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Hook gate"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<system-notice>\nUser interjection during work: priority; supersedes conflicting prior instructions. Re-read; ensure current work reflects user intent.\n</system-notice>\nOwner steering"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Runtime supervisor (not Darafei): FIX NOW: 1. Staff «Cooling» (overdue 6m); 2. Push «Push branch»; 3. Repair refused staffing for «Power»; 4. Staff «Frame»"
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "prompt_cache_key": "offline",
+    "store": false,
+    "include": [
+      "reasoning.encrypted_content"
+    ]
+  },
+  "scriptedAB": {
+    "A": "continue reading",
+    "B": "staff Cooling",
+    "limitation": "scripted channel detector, not model adherence or live latency"
+  }
+}

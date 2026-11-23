@@ -6,6 +6,8 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import {
 	cfgLspDiagnosticsOnEdit,
 	cfgLspDiagnosticsOnWrite,
@@ -176,6 +178,8 @@ function mockIsolation(): void {
 describe("subagent LSP availability", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
 	});
 
 	it("gives subagents the lsp tool but no LSP checks on their edits by default", async () => {

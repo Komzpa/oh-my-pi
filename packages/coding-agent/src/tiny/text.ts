@@ -86,6 +86,66 @@ const FILLER_TITLE_TOKENS = new Set<string>([
 ]);
 
 const TITLE_WORD = /[\p{L}\p{N}]+/gu;
+
+const ACKNOWLEDGEMENT_REACTIONS = new Set([
+	"go",
+	"continue",
+	"proceed",
+	"ack",
+	"да",
+	"го",
+	"продолжай",
+	"ок",
+	"окей",
+	"ага",
+	"угу",
+	"спасибо",
+	"fuck",
+	"fucking",
+	"shit",
+	"damn",
+	"бля",
+	"блять",
+	"блядь",
+	"сука",
+	"пиздец",
+	"нахуй",
+	// urgency / impatience: asks for speed, not for a new deliverable
+	"хули",
+	"хуле",
+	"мразь",
+	"где",
+	"долго",
+	"так",
+	"быстрее",
+	"скорее",
+	"wtf",
+	"hurry",
+	"faster",
+]);
+
+/** `бляяяядь` -> `блядь`: runs of a repeated letter are one letter for reaction matching. */
+function collapseRepeats(token: string): string {
+	return token.replace(/(\p{L})\1+/gu, "$1");
+}
+
+/** No task object: every raw word is an acknowledgement or an emotional reaction.
+ * Unlike title cleanup, this keeps code and quoted words in the decision; an
+ * unknown word or a concrete `test` request stays available for classification.
+ */
+export function isAcknowledgementOnlyInput(message: string): boolean {
+	// A lead's standalone steering reference controls existing work; it is not a new deliverable.
+	if (/^@\/(?:[^\r\n/]+\/)*steer_[^\r\n/]+\.md$/u.test(message.trim())) return true;
+	const tokens = message.toLowerCase().match(TITLE_WORD);
+	if (!tokens) return true;
+	return tokens.every(
+		token =>
+			ACKNOWLEDGEMENT_REACTIONS.has(token) ||
+			ACKNOWLEDGEMENT_REACTIONS.has(collapseRepeats(token)) ||
+			(FILLER_TITLE_TOKENS.has(token) && token !== "test" && token !== "tests" && token !== "testing"),
+	);
+}
+
 const COMMON_TITLE_ACRONYMS = new Set<string>([
 	"API",
 	"CLI",

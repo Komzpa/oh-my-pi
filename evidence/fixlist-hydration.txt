@@ -1,0 +1,19 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/todo_calibration.io.test.ts:
+(pass) appending an outcome reads only appended bytes and retains prior calibration [0.66ms]
+(pass) partial outcomes are deferred, replacements and truncation discard obsolete history [0.30ms]
+
+packages/coding-agent/test/session-branch-cooperative.test.ts:
+(pass) digest selection stays on the active ancestry and yields without materializing the transcript [1.95ms]
+(pass) critic skips historical payloads excluded by indexed metadata [0.21ms]
+
+packages/coding-agent/test/session/branch-selection.test.ts:
+(pass) indexed selection avoids historical payloads and keeps canonical TODO decisions [0.48ms]
+(pass) legacy capability preserves chronological selection and newest-first lookup [0.10ms]
+(pass) newest-first indexed iterator stops without loading older matches [0.04ms]
+
+ 7 pass
+ 0 fail
+ 23 expect() calls
+Ran 7 tests across 3 files. [251.00ms]

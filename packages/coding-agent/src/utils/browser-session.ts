@@ -14,6 +14,7 @@ import {
 	removeUserDataDir,
 	stealthIgnoreDefaultArgs,
 } from "../tools/browser/launch";
+import { launchBackgroundBrowser } from "../tools/browser/priority";
 
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
 
@@ -40,7 +41,7 @@ export async function captureBrowserSession(
 		// Do not race launch: retain ownership even if cancellation happens before it resolves.
 		// Unlike general browser tooling, authentication keeps sandbox and TLS checks enabled.
 		// Automation mode must stay off: Google sign-in rejects automation-controlled browsers.
-		browser = await puppeteer.launch({
+		browser = await launchBackgroundBrowser(puppeteer, {
 			executablePath,
 			headless: false,
 			defaultViewport: null,

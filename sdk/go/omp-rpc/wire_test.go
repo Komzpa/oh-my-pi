@@ -308,14 +308,14 @@ func TestResultDecoding(t *testing.T) {
 		t.Fatalf("cycle_thinking_level: %v %v", result, err)
 	}
 	transport.data = json.RawMessage(`null`)
-	if _, err := commands.GetState(ctx); err == nil {
+	if _, err := commands.GetState(ctx, GetStateCommand{}); err == nil {
 		t.Fatal("null non-nullable result decoded")
 	}
 	transport.data = nil
 	if ack, err := commands.Prompt(ctx, PromptCommand{Message: "hi"}); err != nil || ack.AgentInvoked != nil {
 		t.Fatalf("absent prompt ack data: %#v %v", ack, err)
 	}
-	if _, err := commands.GetState(ctx); err == nil || !strings.Contains(err.Error(), "sessionId") {
+	if _, err := commands.GetState(ctx, GetStateCommand{}); err == nil || !strings.Contains(err.Error(), "sessionId") {
 		t.Fatalf("absent data for a result with required fields: %v", err)
 	}
 

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { ImageContent, Message } from "@oh-my-pi/pi-ai";
 import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -9,6 +9,8 @@ import { disposeAllKernelSessions, executePython } from "@oh-my-pi/pi-coding-age
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { EvalTool } from "@oh-my-pi/pi-coding-agent/tools/eval";
 import { normalizeModelContextMessages } from "@oh-my-pi/pi-coding-agent/utils/image-loading";
+import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
+import { getAgentDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 const IMAGE_DATA = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64");
 
@@ -62,8 +64,18 @@ function session(getPreludes: () => readonly EvalPreludeDefinition[]): ToolSessi
 }
 
 describe("eval prelude runtime", () => {
+	let temp: TempDir;
+	let previousAgentDir: string;
+	beforeAll(() => {
+		previousAgentDir = getAgentDir();
+		temp = TempDir.createSync("eval-prelude-runtime-");
+		setAgentDir(temp.path());
+	});
 	afterAll(async () => {
 		await Promise.all([disposeAllVmContexts(), disposeAllKernelSessions()]);
+		AgentStorage.close();
+		setAgentDir(previousAgentDir);
+		temp.removeSync();
 	});
 
 	for (const language of ["js", "py"] satisfies ("js" | "py")[]) {

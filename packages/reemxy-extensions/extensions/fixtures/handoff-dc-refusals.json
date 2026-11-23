@@ -1,0 +1,417 @@
+[
+  {
+    "line": 92345,
+    "timestamp": "2026-11-05T16:16:07.138Z",
+    "row": {
+      "content": "Max simulator: separate repo predicting Max's reactions",
+      "status": "pending",
+      "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+      "artifactOwner": "main",
+      "schedule": {
+        "firstRequirementAt": 1793895041557,
+        "previewTracked": true,
+        "previewPending": true,
+        "previewIdentityMissing": true,
+        "previewPartial": false,
+        "dependencies": [],
+        "owner": "BuildMaxSimulator",
+        "reestimateCount": 0,
+        "resources": [
+          "/home/kom/proj/sunbim/max-simulator"
+        ],
+        "estimateRevision": 1,
+        "estimate": {
+          "optimisticSeconds": 1500,
+          "likelySeconds": 2700,
+          "pessimisticSeconds": 3500,
+          "confidence": "low",
+          "basis": "extract Max quotes from ~12 transcripts ~10m, persona+agent def ~10m, holdout eval vs 11-05 call ~15m, commit ~3m",
+          "updatedAt": 1793895058640
+        }
+      }
+    },
+    "call": {
+      "tasks": [
+        {
+          "name": "BuildMaxSimulatorRepo",
+          "agent": "coder",
+          "scope": {
+            "root": "/home/kom/proj/sunbim/max-simulator",
+            "paths": [
+              "/home/kom/proj/sunbim/max-simulator",
+              "/home/kom/.omp/agent/agents/max-sim.md"
+            ]
+          },
+          "resources": [
+            "/home/kom/proj/sunbim/max-simulator",
+            "/home/kom/.omp/agent/agents/max-sim.md"
+          ],
+          "task": "Row: Max simulator: separate repo predicting Max's reactions.\nDarafei verbatim: \"\u043f\u043e\u0441\u0442\u0440\u043e\u0439 \u043c\u043d\u0435 \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e \u043e\u0442 \u044d\u0442\u043e\u0433\u043e \u0440\u0435\u043f\u043e\u0437\u0438\u0442\u043e\u0440\u0438\u044f \u0441\u0438\u043c\u0443\u043b\u044f\u0442\u043e\u0440 \u041c\u0430\u043a\u0441\u0438\u043c\u0430\". This overrides the shared-context worktree/PRD rules: this lane does NOT touch the XMOVA repo (read-only there).\nROOT=/home/kom/proj/sunbim/max-simulator: create, `git init -b main`, commit per step, no remote. Also write /home/kom/.omp/agent/agents/max-sim.md. A previous lane (BuildMaxSimulator) was blocked from writing; its research is at history://BuildMaxSimulator \u2014 reuse it, do not redo.\nSources: Max transcripts in /home/kom/proj/sunbim/datacenter-decision-graph/doc/research/transcripts/ (names with maksim / xmova-sync) and tmp/followup-pr-2026-11-05/doc/research/transcripts/2026-11-05-xmova-sync.raw.md (Max = Speaker 2 by inference, mark certainty). Prior theme synthesis: agent://MaxTheme.\nDeliver: README.md (Russian, how to use); tools/extract.py -> corpus/max_quotes.jsonl (every Max utterance verbatim: date, file, line, timestamp, text, tags, attribution named|inferred), counts in corpus/README.md; persona.md (values, speech style, ranked recurring complaints, every claim cites quote ids); agent def max-sim.md modeled on /home/kom/.omp/agent/agents/user-shadow.md frontmatter (tools read/grep/glob/find/bash, model \"@judgment\", spawns []): input screenshot/URL/proposal -> Russian ranked list of what Max would say + why + precedent quote ids/dates + confidence (\u22640.5 without precedent) + what he'd ask to see instead; never edits product files. eval/2026-11-05-holdout.md: predict 11-05 complaints from pre-11-05 corpus only, hit/miss table, recall with denominator, method stated honestly.\nReturn HEAD sha, file list, quote counts per transcript, holdout recall, one sample run on a .png from /home/kom/proj/sunbim/datacenter-decision-graph/tmp/sync-complaints-2026-11-05.",
+          "solutionSpace": "design open: corpus+persona+agent def; simple, no framework"
+        }
+      ]
+    }
+  },
+  {
+    "line": 92484,
+    "timestamp": "2026-11-05T16:19:22.737Z",
+    "row": {
+      "content": "Max simulator: separate repo predicting Max's reactions",
+      "status": "pending",
+      "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+      "artifactOwner": "main",
+      "schedule": {
+        "firstRequirementAt": 1793895041557,
+        "previewTracked": true,
+        "previewPending": true,
+        "previewIdentityMissing": true,
+        "previewPartial": false,
+        "dependencies": [],
+        "owner": "BuildMaxSimulator",
+        "reestimateCount": 0,
+        "resources": [
+          "/home/kom/proj/sunbim/max-simulator"
+        ],
+        "estimateRevision": 1,
+        "estimate": {
+          "optimisticSeconds": 1500,
+          "likelySeconds": 2700,
+          "pessimisticSeconds": 3500,
+          "confidence": "low",
+          "basis": "extract Max quotes from ~12 transcripts ~10m, persona+agent def ~10m, holdout eval vs 11-05 call ~15m, commit ~3m",
+          "updatedAt": 1793895058640
+        }
+      }
+    },
+    "call": {
+      "tasks": []
+    }
+  },
+  {
+    "line": 92799,
+    "timestamp": "2026-11-05T16:27:55.770Z",
+    "row": {
+      "content": "Standalone Max simulator repo with holdout eval",
+      "status": "in_progress",
+      "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+      "artifactOwner": "main",
+      "schedule": {
+        "firstRequirementAt": 1793895483757,
+        "previewTracked": true,
+        "previewPending": true,
+        "previewIdentityMissing": true,
+        "previewPartial": false,
+        "dependencies": [],
+        "owner": "MaxSimRepo",
+        "reestimateCount": 0,
+        "resources": [
+          "/home/kom/proj/sunbim/max-simulator",
+          "/home/kom/.omp/agent/agents/max-sim.md"
+        ],
+        "estimateRevision": 1,
+        "estimate": {
+          "optimisticSeconds": 1200,
+          "likelySeconds": 2100,
+          "pessimisticSeconds": 3300,
+          "confidence": "low",
+          "basis": "speaker counts already gathered by blocked lane; extractor+dedupe 10m, persona 10m, agent def 5m, holdout 10m",
+          "updatedAt": 1793895522625
+        },
+        "riskEstimateMeanSeconds": 2150,
+        "executor": {
+          "workerId": "MaxSimRepo",
+          "agentProfile": "coder",
+          "resolvedModel": "codex-lb/gpt-6.1-terra",
+          "thinkingLevel": "medium",
+          "startedAt": 1793895583473
+        }
+      }
+    },
+    "call": {
+      "tasks": [
+        {
+          "name": "MaxSimBlindEval",
+          "agent": "researcher",
+          "task": "Row: Standalone Max simulator repo with holdout eval.\nROOT=/home/kom/proj/sunbim/datacenter-decision-graph/tmp/max-simulator (git repo, HEAD 984c37c94; you may add files under eval/ and commit there; nothing else). The existing eval/2026-11-05-holdout.md is honestly labelled contaminated (author saw 11-05). Produce a real blind run in two phases. Phase 1 (predict): read ONLY ROOT/persona.md, ROOT/agents/max-sim.md and corpus rows dated before 2026-11-05 (filter max_quotes.jsonl by date; do NOT open the 11-05 transcript, the sync-complaints pages, agent://MaxTheme or eval/). Input = the screens shown on 11-05: open the .png files in /home/kom/proj/sunbim/datacenter-decision-graph/tmp/sync-video-frames-2026-11-05 (frames from the call video; read only the images and their timestamps, not index.md text). Follow max-sim.md and write eval/2026-11-05-blind-predictions.md, commit it (the commit timestamp fixes the predictions). Phase 2 (score): only after the commit, read the cards sync-01..17 titles from http://127.0.0.1:8767/review/sync-complaints-2026-11-05-v2/ and score each card hit/miss strictly (a hit needs a prediction naming the same object and problem, not a theme). Write eval/2026-11-05-blind-score.md: table, recall = hits/17, precision = hits/predictions, method and leakage risks. Commit. Return SHAs, recall, precision.\nRetro: not requested.",
+          "solutionSpace": "method given; scoring judgment open",
+          "scope": {
+            "root": "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/max-simulator"
+          },
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/max-simulator/eval"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "line": 92820,
+    "timestamp": "2026-11-05T16:28:34.297Z",
+    "row": {
+      "content": "Standalone Max simulator repo with holdout eval",
+      "status": "in_progress",
+      "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+      "artifactOwner": "main",
+      "schedule": {
+        "firstRequirementAt": 1793895483757,
+        "previewTracked": true,
+        "previewPending": true,
+        "previewIdentityMissing": true,
+        "previewPartial": false,
+        "dependencies": [],
+        "owner": "MaxSimRepo",
+        "reestimateCount": 0,
+        "resources": [
+          "/home/kom/proj/sunbim/max-simulator",
+          "/home/kom/.omp/agent/agents/max-sim.md"
+        ],
+        "estimateRevision": 1,
+        "estimate": {
+          "optimisticSeconds": 1200,
+          "likelySeconds": 2100,
+          "pessimisticSeconds": 3300,
+          "confidence": "low",
+          "basis": "speaker counts already gathered by blocked lane; extractor+dedupe 10m, persona 10m, agent def 5m, holdout 10m",
+          "updatedAt": 1793895522625
+        },
+        "riskEstimateMeanSeconds": 2150,
+        "executor": {
+          "workerId": "MaxSimRepo",
+          "agentProfile": "coder",
+          "resolvedModel": "codex-lb/gpt-6.1-terra",
+          "thinkingLevel": "medium",
+          "startedAt": 1793895583473
+        }
+      }
+    },
+    "call": {
+      "tasks": [
+        {
+          "name": "MaxSimDeliveredCard",
+          "agent": "ui-coder",
+          "task": "Build one delivered-change review page per skill://review-questions-page (delivered-change cards, Accept / Redo / Drop) on :8767 for the row 'Standalone Max simulator repo with holdout eval'. ROOT=/home/kom/proj/sunbim/datacenter-decision-graph/tmp/max-sim-review-page (create; page files only). Artifact: git repo /home/kom/proj/sunbim/datacenter-decision-graph/tmp/max-simulator @984c37c94 (read only). Card content in plain Russian: what was built (corpus 3018 Max utterances from 17+ calls, persona.md, agents/max-sim.md, extractor), the honest limit (eval/2026-11-05-holdout.md: contaminated retrospective 9/17 thematic matches, blind recall not measured; sample run manual), and where it lives. Show as image a rendered screenshot of persona.md top section and of the holdout table (render markdown to HTML in ROOT and capture). Open the page yourself and return the URL.\nRetro: not requested.",
+          "solutionSpace": "page format fixed by skill",
+          "scope": {
+            "root": "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/max-sim-review-page"
+          },
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/max-sim-review-page"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "line": 93026,
+    "timestamp": "2026-11-05T16:32:40.033Z",
+    "row": {
+      "content": "Redundancy change highlights added and removed equipment (11)",
+      "status": "in_progress",
+      "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+      "artifactOwner": "main",
+      "schedule": {
+        "firstRequirementAt": 1793895141242,
+        "previewTracked": true,
+        "previewPending": true,
+        "previewIdentityMissing": true,
+        "previewPartial": false,
+        "dependencies": [],
+        "owner": "HighlightRedundancyChanges",
+        "reestimateCount": 0,
+        "resources": [
+          "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-11-redundancy-diff-2026-11-05"
+        ],
+        "estimateRevision": 1,
+        "estimate": {
+          "optimisticSeconds": 1800,
+          "likelySeconds": 2700,
+          "pessimisticSeconds": 3600,
+          "confidence": "low",
+          "basis": "inventory diff by physical id 15m, scene highlight via existing preview ghost 15m, e2e N->N+1->2N 10m, gates 8m",
+          "updatedAt": 1793895156378
+        },
+        "riskEstimateMeanSeconds": 2700,
+        "executor": {
+          "workerId": "HighlightRedundancyChanges",
+          "agentProfile": "ui-coder",
+          "resolvedModel": "codex-lb/gpt-6.1-terra",
+          "thinkingLevel": "medium",
+          "startedAt": 1793895343670
+        },
+        "attemptHistory": [
+          {
+            "attemptId": "HighlightRedundancyDiff:1793895218746",
+            "workerName": "HighlightRedundancyDiff",
+            "resolvedModel": "codex-lb/gpt-6.1-terra",
+            "effort": "unresolved",
+            "startedAt": 1793895218746,
+            "finishedAt": 1793895303020,
+            "durationMs": 111518,
+            "terminalStatus": "aborted",
+            "deliverablePaths": [
+              "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/HighlightRedundancyDiff.md"
+            ],
+            "infraFailureError": "The operation was aborted.",
+            "infraFailureLine": "attempt 1 failed: The operation was aborted."
+          }
+        ],
+        "progress": {
+          "at": 1793895399309,
+          "evidence": "Attempt 1 cancelled with no commit (coder refused visual); HighlightRedundancyChanges ui-coder running."
+        }
+      }
+    },
+    "call": {
+      "tasks": [
+        {
+          "name": "RedundancyHighlightProof",
+          "agent": "ui-coder",
+          "task": "Row: Redundancy change highlights added and removed equipment (11).\nROOT=/home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-11-redundancy-diff-2026-11-05 (existing worktree, branch do-11-redundancy-diff, checkpoint 233f05ba1 by HighlightRedundancyChanges, which yields; you are now sole writer). Read its patch ROOT/0001-Show-redundancy-inventory-preview.patch and transcript history://HighlightRedundancyChanges first. Commit with --no-verify per slice; no push. Evidence under ROOT/test-results/redundancy/.\nRequirement (Max: '\u043d\u0435 \u043c\u043e\u0433\u0443 \u0432\u0438\u0437\u0443\u0430\u043b\u044c\u043d\u043e \u043f\u043e\u043d\u044f\u0442\u044c, \u0447\u0442\u043e \u043c\u0435\u043d\u044f\u0435\u0442\u0441\u044f'): previewing N -> N+1 -> 2N highlights exactly the added equipment instances and shows removed ones distinctly until Apply, from a diff of current vs preview inventory by stable physical ids. Finish: rendered-ID oracle (highlighted set equals model diff), e2e Preview/Cancel/Apply/Undo journey, inspected screenshots at 1280 and 390, scene-budget draw-call assertion in e2e/product-root.spec.ts ('AI Project opens a complete Facility basis with a stable Heat layer') with count vs limit, PRD clause. `npx tsc -b` exit, lint. Return SHA, absolute format-patch path, base 6b742b221d, runner lines with exit code and stats, screenshot paths.\nRetro: not requested.",
+          "solutionSpace": "design given by checkpoint; finish proof",
+          "scope": {
+            "root": "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-11-redundancy-diff-2026-11-05",
+            "branch": "do-11-redundancy-diff"
+          },
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-11-redundancy-diff-2026-11-05"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "line": 93047,
+    "timestamp": "2026-11-05T16:33:02.885Z",
+    "row": {
+      "content": "Rack apply keeps the edited decision open (06)",
+      "status": "in_progress",
+      "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+      "artifactOwner": "main",
+      "schedule": {
+        "firstRequirementAt": 1793895141242,
+        "previewTracked": true,
+        "previewPending": true,
+        "previewIdentityMissing": true,
+        "previewPartial": false,
+        "dependencies": [],
+        "owner": "KeepRackDecisionOpenAfterApply",
+        "reestimateCount": 0,
+        "resources": [
+          "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-06-rack-apply-2026-11-05"
+        ],
+        "estimateRevision": 1,
+        "estimate": {
+          "optimisticSeconds": 1500,
+          "likelySeconds": 2400,
+          "pessimisticSeconds": 3500,
+          "confidence": "low",
+          "basis": "worktree+npm ci 5m, PRD clause+selection fix 15m, e2e spec 10m, tsc/lint/unit 8m",
+          "updatedAt": 1793895156378
+        },
+        "riskEstimateMeanSeconds": 2433.3333333333335,
+        "executor": {
+          "workerId": "KeepRackDecisionOpenAfterApply",
+          "agentProfile": "coder",
+          "resolvedModel": "codex-lb/gpt-6.1-terra",
+          "startedAt": 1793895222793
+        }
+      }
+    },
+    "call": {
+      "tasks": [
+        {
+          "name": "DeliveredCardsEvening",
+          "agent": "ui-coder",
+          "task": "ROOT=/home/kom/proj/sunbim/datacenter-decision-graph/tmp/delivered-cards-evening (create; page sources and captures). Build ONE page with delivered-change cards for these rows; each card: what changed, current screenshot (use the existing captures listed; no placeholders), honest status, Accept / Redo / Drop.\n1. 'Standalone Max simulator repo with holdout eval' \u2014 repo /home/kom/proj/sunbim/datacenter-decision-graph/tmp/max-simulator @984c37c94: 3018 Max quotes, persona.md, agents/max-sim.md; eval/2026-11-05-holdout.md says retrospective 9/17 thematic, contaminated, blind recall unmeasured. Capture: render persona.md top and the holdout table to HTML and screenshot.\n2. 'Rack close-up: Move closer fills 40% of view (12)' \u2014 branch do-12-rack-zoom @f41556e67: camera already reaches 83% of view height at 1280 and 390; added PRD \u226540% clause + bbox oracle; no camera code changed. Screenshots: /home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-12-rack-zoom-2026-11-05/test-results/rack-close-proof/*/rack-1280.png and rack-390.png.\n3. 'Redundancy change highlights added and removed equipment (11)' \u2014 PARTIAL checkpoint 233f05ba1 in tmp/do-11-redundancy-diff-2026-11-05 (inventory diff preview); browser proof not yet run; say so. Screenshot: find any png under that worktree's test-results; if none, capture from that worktree served on your own port 47000-47999 (Facility, change redundancy, Preview) with a separate output/report directory for this run; let the measured host capacity gate admit it.\n4. 'Rack apply keeps the edited decision open (06)' \u2014 PARTIAL 2c4250445 in tmp/do-06-rack-apply-2026-11-05: list path green at 1280/390; physical-rack path blocked by panel overflow fix. Screenshots under that worktree test-results/rack-proof/.\nReturn URL, card ids, screenshot paths.",
+          "solutionSpace": "page format fixed by skill",
+          "scope": {
+            "root": "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/delivered-cards-evening"
+          },
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/delivered-cards-evening"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "line": 93197,
+    "timestamp": "2026-11-05T16:35:43.478Z",
+    "row": {
+      "content": "Redundancy change highlights added and removed equipment (11)",
+      "status": "in_progress",
+      "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+      "artifactOwner": "main",
+      "schedule": {
+        "firstRequirementAt": 1793895141242,
+        "previewTracked": true,
+        "previewPending": true,
+        "previewIdentityMissing": false,
+        "previewPartial": false,
+        "dependencies": [],
+        "owner": "HighlightRedundancyChanges",
+        "reestimateCount": 0,
+        "resources": [
+          "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-11-redundancy-diff-2026-11-05"
+        ],
+        "estimateRevision": 2,
+        "estimate": {
+          "optimisticSeconds": 1200,
+          "likelySeconds": 2100,
+          "pessimisticSeconds": 3400,
+          "confidence": "low",
+          "basis": "checkpoint 233f05ba1 committed; remaining: rendered-ID oracle, browser journey, screenshots, scene budget via queued slot",
+          "updatedAt": 1793896333299
+        },
+        "riskEstimateMeanSeconds": 2700,
+        "executor": {
+          "workerId": "HighlightRedundancyChanges",
+          "agentProfile": "ui-coder",
+          "resolvedModel": "codex-lb/gpt-6.1-terra",
+          "thinkingLevel": "medium",
+          "startedAt": 1793895343670,
+          "finishedAt": 1793896492245,
+          "outcome": "completed"
+        },
+        "attemptHistory": [
+          {
+            "attemptId": "HighlightRedundancyDiff:1793895218746",
+            "workerName": "HighlightRedundancyDiff",
+            "resolvedModel": "codex-lb/gpt-6.1-terra",
+            "effort": "unresolved",
+            "startedAt": 1793895218746,
+            "finishedAt": 1793895303020,
+            "durationMs": 111518,
+            "terminalStatus": "aborted",
+            "deliverablePaths": [
+              "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/HighlightRedundancyDiff.md"
+            ],
+            "infraFailureError": "The operation was aborted.",
+            "infraFailureLine": "attempt 1 failed: The operation was aborted."
+          }
+        ],
+        "progress": {
+          "at": 1793895399309,
+          "evidence": "Attempt 1 cancelled with no commit (coder refused visual); HighlightRedundancyChanges ui-coder running."
+        }
+      }
+    },
+    "call": {
+      "tasks": [
+        {
+          "name": "RedundancyHighlightProof",
+          "agent": "ui-coder",
+          "task": "Row: Redundancy change highlights added and removed equipment (11).\nROOT=/home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-11-redundancy-diff-2026-11-05 (existing worktree, branch do-11-redundancy-diff, checkpoint 233f05ba1 by HighlightRedundancyChanges, which has yielded; you are now sole writer). Read its patch ROOT/0001-Show-redundancy-inventory-preview.patch and history://HighlightRedundancyChanges first. Commit with --no-verify per slice; no push. Evidence under ROOT/test-results/redundancy/.\nRequirement (Max: '\u043d\u0435 \u043c\u043e\u0433\u0443 \u0432\u0438\u0437\u0443\u0430\u043b\u044c\u043d\u043e \u043f\u043e\u043d\u044f\u0442\u044c, \u0447\u0442\u043e \u043c\u0435\u043d\u044f\u0435\u0442\u0441\u044f'): previewing N -> N+1 -> 2N highlights exactly the added equipment instances and shows removed ones distinctly until Apply, from a diff of current vs preview inventory by stable physical ids. Finish: rendered-ID oracle (highlighted set equals model diff), e2e Preview/Cancel/Apply/Undo journey, inspected screenshots at 1280 and 390, scene-budget draw-call assertion in e2e/product-root.spec.ts ('AI Project opens a complete Facility basis with a stable Heat layer') with count vs limit, PRD clause. `npx tsc -b` exit, lint. Return SHA, absolute format-patch path, base 6b742b221d, runner lines with exit code and stats, screenshot paths.\nRetro: not requested.",
+          "solutionSpace": "design given by checkpoint; finish proof",
+          "scope": {
+            "root": "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-11-redundancy-diff-2026-11-05",
+            "branch": "do-11-redundancy-diff"
+          },
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/do-11-redundancy-diff-2026-11-05"
+          ]
+        }
+      ]
+    }
+  }
+]

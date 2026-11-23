@@ -18,6 +18,7 @@ import { setEmojiAutocompleteEnabled } from "@oh-my-pi/pi-tui/prompt/prompt-acti
 import { WORD_COMPLETION_METHODS } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
 import { setInlineImageMaxColumns, setInlineImageMaxRows } from "@oh-my-pi/pi-tui/render/render-utils";
+import { DEFAULT_FRAME_DROP_THRESHOLD_MS } from "@oh-my-pi/pi-tui/frame-telemetry";
 import { setShimmerMode } from "@oh-my-pi/pi-tui/theme/shimmer";
 import { setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "@oh-my-pi/pi-tui/theme/theme";
 import { DEFAULT_MAX_FPS, parseMaxFps, setMaxFps } from "@oh-my-pi/pi-tui/frame-rate";
@@ -279,6 +280,18 @@ export const cfgStatusLineShowHookStatus = register({
 	},
 });
 
+export const cfgStatusLineShowFpsMeter = register({
+	id: "statusLine.showFpsMeter",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "appearance",
+		group: "Status Line",
+		label: "Show FPS Meter",
+		description: "Display TUI frame rate, p95 render time, and event-loop lag in the status line",
+	},
+});
+
 export const cfgStatusLineLeftSegments = register({
 	id: "statusLine.leftSegments",
 	type: "array",
@@ -390,6 +403,18 @@ export const cfgTuiResizeScrollback = register({
 				description: "Repaint only the viewport and keep history wrapped at its old width",
 			},
 		],
+	},
+});
+
+export const cfgTuiFrameDropThresholdMs = register({
+	id: "tui.frameDropThresholdMs",
+	type: "number",
+	default: DEFAULT_FRAME_DROP_THRESHOLD_MS,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Frame Drop Threshold (ms)",
+		description: "Log a structured ui.frame-drop entry when a frame gap or event-loop block exceeds this duration",
 	},
 });
 
@@ -1506,6 +1531,25 @@ export function askTimeoutMs(settings: Settings): number | undefined {
 	const timeoutSeconds = cfgAskTimeout.get(settings);
 	return timeoutSeconds === 0 ? undefined : timeoutSeconds * 1000;
 }
+
+/** Opt-in lead policy; ordinary upstream ask behavior remains the default. */
+export const cfgAskGateEnabled = register({
+	id: "ask.gate.enabled",
+	type: "boolean",
+	default: false,
+});
+
+export const cfgAskGateAgent = register({
+	id: "ask.gate.agent",
+	type: "string",
+	default: "",
+});
+
+export const cfgAskGateRecentSeconds = register({
+	id: "ask.gate.recentSeconds",
+	type: "number",
+	default: 0,
+});
 
 export const cfgAskNotify = register({
 	id: "ask.notify",

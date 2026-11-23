@@ -1,0 +1,7 @@
+List and send messages to other live local OMP sessions owned by this user.
+
+Use `action: "list"` to discover sessions without transcript access. Use `action: "send"` with a target session id, unique id prefix, cwd/title fragment, and optional `agent` id. A message consisting of a registered slash command and its arguments runs through the target's command dispatcher; the receipt reports `executed`, `queued` for a command prompt, or a failure reason (including commands requiring interactive input). Plain text and unknown slash names stay IRC messages. Plain-text sends are written to a durable per-session inbox before delivery. If a live peer does not answer its socket probe, `omp peers list` keeps its last known title, cwd and session id, marks it busy with the probe timeout, and `send` returns `queued`; the receiver drains the inbox on a socket wake, after a tool result, or at the turn boundary. Message ids prevent a socket wake and boundary drain from delivering the same message twice. If the peer exits normally before reading a queued message, the sender can see an `Undelivered` entry with `omp peers inbox <reply-address>`.
+
+Registered slash commands keep their synchronous command-dispatch behavior and are not put in the durable plain-text inbox. They can still return an uncertain result if their handler outlasts the command timeout.
+
+Reply to a session sender using `write` with `path: "agent://peer:<senderSessionId>"`; that address uses the same peer transport.

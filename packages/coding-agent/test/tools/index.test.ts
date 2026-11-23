@@ -140,7 +140,8 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["yield"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["yield"]);
+		// A read-only explicit list gets `write` as the fork's agent:// reply transport (see createTools).
+		expect(names).toEqual(["yield", "write"]);
 	});
 
 	it("includes yield tool when required", async () => {
@@ -211,7 +212,8 @@ describe("createTools", () => {
 			}),
 			["ask", "read"],
 		);
-		expect(requested.map(t => t.name)).toEqual(["read"]);
+		// A read-only explicit list gets `write` as the fork's agent:// reply transport (see createTools).
+		expect(requested.map(t => t.name)).toEqual(["read", "write"]);
 	});
 
 	it("filters disabled builtin tools by settings", async () => {
@@ -253,14 +255,16 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["read"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["read", "goal"]);
+		// A read-only explicit list gets `write` as the fork's agent:// reply transport (see createTools).
+		expect(names).toEqual(["read", "goal", "write"]);
 	});
 
 	it("presents report_issue top-level when Auto-QA is on and bash is not requested", async () => {
 		const session = createTestSession({ settings: Settings.isolated({ "dev.autoqa": true }) });
 		const tools = await createTools(session, ["read"]);
 
-		expect(tools.map(tool => tool.name)).toEqual(["read", "report_issue"]);
+		// A read-only explicit list gets `write` as the fork's agent:// reply transport (see createTools).
+		expect(tools.map(tool => tool.name)).toEqual(["read", "write", "report_issue"]);
 		expect(session.toolCommands).toBeUndefined();
 	});
 

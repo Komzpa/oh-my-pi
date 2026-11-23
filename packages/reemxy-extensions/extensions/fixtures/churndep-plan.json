@@ -1,0 +1,65 @@
+{
+  "asOf": "2026-11-01T00:00:00Z",
+  "phases": [
+    {
+      "name": "Synthetic phase",
+      "tasks": [
+        {
+          "content": "Row A",
+          "status": "pending",
+          "schedule": {
+            "dependencies": [
+              "Row B"
+            ],
+            "estimate": {
+              "optimisticSeconds": 60,
+              "likelySeconds": 120,
+              "pessimisticSeconds": 180,
+              "confidence": "medium",
+              "basis": "Synthetic estimate",
+              "updatedAt": 1793491200000
+            },
+            "cumulativeReestimateCount": 6
+          }
+        },
+        {
+          "content": "Row B",
+          "status": "pending",
+          "schedule": {
+            "dependencies": [
+              "Row C"
+            ],
+            "estimate": {
+              "optimisticSeconds": 60,
+              "likelySeconds": 120,
+              "pessimisticSeconds": 180,
+              "confidence": "medium",
+              "basis": "Synthetic estimate",
+              "updatedAt": 1793491200000
+            }
+          }
+        },
+        {
+          "content": "Row C",
+          "status": "in_progress",
+          "schedule": {
+            "dependencies": [],
+            "estimate": {
+              "optimisticSeconds": 60,
+              "likelySeconds": 120,
+              "pessimisticSeconds": 180,
+              "confidence": "medium",
+              "basis": "Synthetic estimate",
+              "updatedAt": 1793491200000
+            },
+            "owner": "Worker C",
+            "executor": {
+              "workerId": "Worker C",
+              "startedAt": 1793491200000
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

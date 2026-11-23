@@ -1,0 +1,38 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/tui/test/forecast-base-control.test.ts:
+{"key":"11:12","finish":1794126442442.8965,"note":"Deadline forecast Nov 8 08:27 (calibrated-pert; calibration ×1.00, 0 samples; 0.88 rows/h, 19 closures) | Estimate-honesty defect: Facility labels after rotation: leaders cross the building: pessimistic estimate is below elapsed row age; pessimistic estimate does not exceed a failed attempt | Estimate-honesty defect: Cooling pipes: consolidated realistic trunks, warm and cold both shown: pessimistic estimate is below elapsed row age | Estimate-honesty defect: Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.: pessimistic estimate is below elapsed row age | Estimate-honesty defect: Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the building extends beyond the narrow viewport, leaving only part of the floor visible and communication pipes covering much of the rack area. Before, the whole building footprint was visible.: pessimistic estimate is below elapsed row age | Estimate-honesty defect: 11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor: pessimistic estimate is below elapsed row age | Estimate-honesty defect: Levels that cannot fit show as conflict/risk, not silent revert: pessimistic estimate is below elapsed row age | Estimate-honesty defect: Push 2222fb3f0 to PR 114, update description, pipeline green: pessimistic estimate is below elapsed row age | ETA fixed-path P95 (normal approximation): 2026-11-08T08:27:22.442Z | expected resource finish: 2026-11-08T08:04:01.900Z | scenario envelope: 2026-11-07T08:27:07.439Z..2026-11-08T08:22:21.900Z | issues: 11 | plan required: 1 repairs | resource assumptions: 2 | risk model unavailable"}
+3 | import snapshots from "./dc-forecast-snapshots.json";
+4 | for (const key of ["11:12", "18:11"] as const) test(`DC ${key} removes next-day floor`, () => {
+5 |  const s = snapshots[key]; const now = Date.parse(s.timestamp);
+6 |  const f = forecastTodoPlan(s.phases as TodoScheduleInput, {now,capacity:32});
+7 |  console.log(JSON.stringify({key, finish:f.autoDeadlineForecast?.finish, note:formatPlanForecast(f,now)}));
+8 |  expect(f.autoDeadlineForecast!.finish!).toBeLessThan(Date.parse(key === "11:12" ? "2026-11-08T12:27:22.500+04:00" : "2026-11-08T01:48:33.500+04:00") - 60000);
+                                             ^
+error: expect(received).toBeLessThan(expected)
+
+Expected: < 1794126382500
+Received: 1794126442442.8965
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-workerask-20261107/forecastimpl-base/packages/tui/test/forecast-base-control.test.ts:8:42)
+(fail) DC 11:12 removes next-day floor [6.59ms]
+{"key":"18:11","finish":1794088113605.5454,"note":"Deadline forecast 21:48 (throughput; calibration ×5.36, 8 samples; 0.53 rows/h, 12 closures) | ETA fixed-path P95 (normal approximation): 2026-11-07T16:41:41.694Z | expected resource finish: 2026-11-07T16:14:16.841Z | scenario envelope: 2026-11-07T15:05:32.170Z..2026-11-07T17:17:36.841Z | issues: 5 | resource assumptions: 2 | risk model unavailable"}
+3 | import snapshots from "./dc-forecast-snapshots.json";
+4 | for (const key of ["11:12", "18:11"] as const) test(`DC ${key} removes next-day floor`, () => {
+5 |  const s = snapshots[key]; const now = Date.parse(s.timestamp);
+6 |  const f = forecastTodoPlan(s.phases as TodoScheduleInput, {now,capacity:32});
+7 |  console.log(JSON.stringify({key, finish:f.autoDeadlineForecast?.finish, note:formatPlanForecast(f,now)}));
+8 |  expect(f.autoDeadlineForecast!.finish!).toBeLessThan(Date.parse(key === "11:12" ? "2026-11-08T12:27:22.500+04:00" : "2026-11-08T01:48:33.500+04:00") - 60000);
+                                             ^
+error: expect(received).toBeLessThan(expected)
+
+Expected: < 1794088053500
+Received: 1794088113605.5454
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-workerask-20261107/forecastimpl-base/packages/tui/test/forecast-base-control.test.ts:8:42)
+(fail) DC 18:11 removes next-day floor [0.95ms]
+
+ 0 pass
+ 2 fail
+ 2 expect() calls
+Ran 2 tests across 1 file. [143.00ms]

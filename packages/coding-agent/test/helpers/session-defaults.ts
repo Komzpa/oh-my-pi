@@ -4,6 +4,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 export function createSessionDefaults() {
 	return {
 		setActiveToolsByName: async (_toolNames: string[]) => {},
+		reapplyActiveToolsByName: async (_toolNames: string[]) => {},
 		getMountedToolCommandNames: () => [],
 		waitForIdle: async () => {},
 		prepareForHeadlessAdvisorDrain: () => {},
@@ -15,6 +16,7 @@ export function createSessionDefaults() {
 		waitForRunEnd: async () => {},
 		abort: async () => {},
 		dispose: async () => {},
+		releaseTaskResources: async () => {},
 		setIrcWakeTurnObserver: () => {},
 		holdIrcWakes: () => () => {},
 		isParentIrcSteer: () => false,

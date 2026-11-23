@@ -202,6 +202,33 @@ describe("status line active-window repaint ticker", () => {
 	});
 });
 
+it("probes session inputs once per paint while observing next-paint and unscoped mutations", () => {
+	const session = createSession();
+	const probe = vi.fn(() => undefined);
+	session.getAnthropicSlowModeLabel = probe;
+	const component = new StatusLineComponent(session, createHost());
+	try {
+		component.beginFrame?.();
+		component.getTopBorder(80);
+		const reads = probe.mock.calls.length;
+		component.getTopBorder(80);
+		component.getTopBorder(80);
+		expect(probe.mock.calls.length).toBe(reads);
+		component.endFrame?.();
+		component.beginFrame?.();
+		component.getTopBorder(80);
+		expect(probe.mock.calls.length).toBeGreaterThan(reads);
+		component.endFrame?.();
+		const before = probe.mock.calls.length;
+		component.getTopBorder(80);
+		component.getTopBorder(80);
+		expect(probe.mock.calls.length).toBe(before + 2);
+	} finally {
+		component.endFrame?.();
+		component.dispose();
+	}
+});
+
 /**
  * Contract: a spinner frame inside one second redraws only the brand glyph, and
  * the line it yields is byte-for-byte the line a full rebuild draws at that

@@ -29,9 +29,11 @@
  *
  * @see https://docs.claude.com/en/docs/claude-code/memory#import-additional-files
  */
+import { AsyncLocalStorage } from "node:async_hooks";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, pathIsWithin } from "@oh-my-pi/pi-utils";
 import { readFile } from "../capability/fs";
 
 /** Maximum number of recursive `@`-import hops. Matches Claude Code's documented cap. */
@@ -62,8 +64,17 @@ const TRAILING_PUNCT = /[.,;:!?)\]}"']+$/;
 export interface ExpandAtImportsOptions {
 	/** Maximum hop depth (default: {@link MAX_AT_IMPORT_DEPTH}). */
 	maxDepth?: number;
+	/** Receives original source bytes of imports actually expanded. */
+	loadedFiles?: Map<string, string>;
 	/** Override the home directory used to resolve `~/...` (default: `os.homedir()`). */
 	home?: string;
+}
+
+const importRoot = new AsyncLocalStorage<string>();
+
+/** Expand repository instructions without following includes outside that repository. */
+export async function expandProjectAtImports(content: string, filePath: string, root: string): Promise<string> {
+	return importRoot.run(root, () => expandAtImports(content, filePath));
 }
 
 /**
@@ -82,7 +93,8 @@ export async function expandAtImports(
 	const absoluteSource = path.resolve(filePath);
 	const chain: string[] = [absoluteSource];
 	const budget = { remaining: MAX_AT_IMPORT_EXPANSIONS };
-	return await expand(content, path.dirname(absoluteSource), 0, maxDepth, home, chain, budget);
+	const loadedFiles = options.loadedFiles;
+	return await expand(content, path.dirname(absoluteSource), 0, maxDepth, home, chain, budget, loadedFiles);
 }
 
 async function expand(
@@ -93,6 +105,7 @@ async function expand(
 	home: string,
 	chain: readonly string[],
 	budget: { remaining: number },
+	loadedFiles?: Map<string, string>,
 ): Promise<string> {
 	if (depth >= maxDepth) return content;
 
@@ -103,7 +116,7 @@ async function expand(
 			out.push(segment.text);
 			continue;
 		}
-		out.push(await expandTextSegment(segment.text, baseDir, depth, maxDepth, home, chain, budget));
+		out.push(await expandTextSegment(segment.text, baseDir, depth, maxDepth, home, chain, budget, loadedFiles));
 	}
 	return out.join("");
 }
@@ -116,10 +129,11 @@ async function expandTextSegment(
 	home: string,
 	chain: readonly string[],
 	budget: { remaining: number },
+	loadedFiles?: Map<string, string>,
 ): Promise<string> {
 	const lines = text.split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		lines[i] = await expandLine(lines[i], baseDir, depth, maxDepth, home, chain, budget);
+		lines[i] = await expandLine(lines[i], baseDir, depth, maxDepth, home, chain, budget, loadedFiles);
 	}
 	return lines.join("\n");
 }
@@ -132,6 +146,7 @@ async function expandLine(
 	home: string,
 	chain: readonly string[],
 	budget: { remaining: number },
+	loadedFiles?: Map<string, string>,
 ): Promise<string> {
 	if (!line.includes("@")) return line;
 
@@ -159,7 +174,7 @@ async function expandLine(
 	let cursor = 0;
 	for (const m of matches) {
 		parts.push(line.slice(cursor, m.start));
-		const expanded = await resolveAndExpand(m.importPath, baseDir, depth, maxDepth, home, chain, budget);
+		const expanded = await resolveAndExpand(m.importPath, baseDir, depth, maxDepth, home, chain, budget, loadedFiles);
 		parts.push(expanded ?? line.slice(m.start, m.end));
 		cursor = m.end;
 	}
@@ -175,12 +190,21 @@ async function resolveAndExpand(
 	home: string,
 	chain: readonly string[],
 	budget: { remaining: number },
+	loadedFiles?: Map<string, string>,
 ): Promise<string | null> {
 	if (budget.remaining <= 0) {
 		logger.debug("@-import: expansion budget exhausted", { remaining: budget.remaining });
 		return null;
 	}
 	const resolved = resolveImportPath(importPath, baseDir, home);
+	const root = importRoot.getStore();
+	if (root) {
+		try {
+			if (!pathIsWithin(await fs.realpath(root), await fs.realpath(resolved))) return null;
+		} catch {
+			return null;
+		}
+	}
 	// Only an ancestor in the current import chain counts as a cycle. The
 	// same file imported twice from unrelated places is expanded twice.
 	if (chain.includes(resolved)) {
@@ -194,8 +218,18 @@ async function resolveAndExpand(
 		return null;
 	}
 
+	loadedFiles?.set(resolved, content);
 	budget.remaining--;
-	return await expand(content, path.dirname(resolved), depth + 1, maxDepth, home, [...chain, resolved], budget);
+	return await expand(
+		content,
+		path.dirname(resolved),
+		depth + 1,
+		maxDepth,
+		home,
+		[...chain, resolved],
+		budget,
+		loadedFiles,
+	);
 }
 
 function resolveImportPath(importPath: string, baseDir: string, home: string): string {

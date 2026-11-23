@@ -593,7 +593,13 @@ return { blocked, fast: blockedMs < 2000, answered: await tab.evaluate(() => glo
 				},
 				cancel.signal,
 			);
-			await requested.promise;
+			// Surface a run that fails before reaching the server instead of hanging on the request gate.
+			await Promise.race([
+				requested.promise,
+				run.then(() => {
+					throw new Error("Browser run ended before navigation reached the server");
+				}),
+			]);
 			cancel.abort();
 			expect(await run.catch((error: unknown) => error)).toMatchObject({ message: "Operation aborted" });
 			const after = await invoke({

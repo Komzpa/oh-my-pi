@@ -1,0 +1,2 @@
+Rehearsal only: upstream base pinned to 9370e7bfe26e948d72f53f918e681b402e600383
+OK: 77 PRs merge cleanly onto upstream 9370e7bfe2

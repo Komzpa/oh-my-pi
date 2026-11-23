@@ -28,6 +28,15 @@ import { AgentSession } from "../session/agent-session";
 import { AuthStorage, SqliteAuthCredentialStore } from "../session/auth-storage";
 import { resolveSessionFileArg } from "./session-arg";
 import { SessionManager } from "../session/session-manager";
+import { FileSessionStorage } from "../session/session-storage";
+
+/** The render command exclusively owns its temporary copy, even though its
+ * header preserves the original session ID for faithful lifecycle replay. */
+class RenderSessionStorage extends FileSessionStorage {
+	override claimSession(): () => void {
+		return () => {};
+	}
+}
 
 export interface RenderCommandArgs {
 	/** Session file path or id prefix; default: most recent session for cwd. */
@@ -159,7 +168,7 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 	try {
 		await fs.copyFile(sourcePath, workingCopy);
 		const openStart = performance.now();
-		const sessionManager = await SessionManager.open(workingCopy, undefined, undefined, {
+		const sessionManager = await SessionManager.open(workingCopy, undefined, new RenderSessionStorage(), {
 			suppressBreadcrumb: true,
 		});
 		const openMs = performance.now() - openStart;
@@ -200,10 +209,6 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		const paintMs = performance.now() - paintStart;
 		const paintBytes = terminal.bytes - bytesBeforePaint;
 
-		const entries = sessionManager.getEntries();
-		let messageCount = 0;
-		for (const entry of entries) if (entry.type === "message") messageCount++;
-
 		const repaints: { ms: number; bytes: number }[] = [];
 		for (let i = 0; i < (args.repaint ?? 0); i++) {
 			const start = performance.now();
@@ -221,10 +226,12 @@ export async function runRenderCommand(args: RenderCommandArgs): Promise<number>
 		}
 
 		if (args.timing || args.repaint) {
+			const entryCount = sessionManager.getEntryCount();
+			const messageCount = sessionManager.getEntryCount("message");
 			const rows = mode.chatContainer.render(width).length;
 			const report = [
 				`session  ${sourcePath}`,
-				`         ${formatBytes(sourceSize)}, ${entries.length} entries, ${messageCount} messages, ${rows} transcript rows @ ${width}x${height}`,
+				`         ${formatBytes(sourceSize)}, ${entryCount} entries, ${messageCount} messages, ${rows} transcript rows @ ${width}x${height}`,
 				`open     ${formatMs(openMs)}`,
 				`replay   ${formatMs(replayMs)}  (transcript build + component construction)`,
 				`paint    ${formatMs(paintMs)}  (full frame compose + emit: ${formatBytes(paintBytes)}, ${terminal.writes} writes)`,

@@ -28,7 +28,12 @@ import { type DaemonClient, type OpenRequest, projectScope } from "../../daemon/
 import { workerEnvFromParent } from "../../subprocess/worker-client";
 import { throwIfAborted } from "../tool-errors";
 import { probeCdpStatus } from "./attach";
-import { discardOwnedProfileSessions, resolveSharedBrowserLaunchSpec, seedOwnedProfilePreferences } from "./launch";
+import {
+	discardOwnedProfileSessions,
+	resolveSharedBrowserLaunchSpec,
+	seedOwnedProfilePreferences,
+	type SharedBrowserLaunchSpec,
+} from "./launch";
 import type { SharedTargetScope } from "./orphan-registry";
 import { describeUnit, isLiveUnit, type UnitIdentity, UnitLease } from "./unit-lease";
 
@@ -129,6 +134,33 @@ async function probeEndpoint(wsEndpoint: string): Promise<boolean> {
 }
 
 /**
+ * Chrome registers its main process with the user systemd manager over the
+ * session bus and systemd then moves it into `app.slice/app-<name>-<pid>.scope`,
+ * away from the scope that owns the browser. The session bus must therefore be
+ * absent from this child: an empty value is not enough (GDBus then falls back
+ * to `$XDG_RUNTIME_DIR/bus`), so the variables are removed. `env -u` execs in
+ * place, keeping Chrome's pid as the recorded process pid.
+ */
+export function browserSpawnCommand(launch: Pick<SharedBrowserLaunchSpec, "executablePath" | "args">): {
+	application: string;
+	args: string[];
+} {
+	if (process.platform !== "linux") return { application: launch.executablePath, args: launch.args };
+	return {
+		application: "/usr/bin/env",
+		args: [
+			"-u",
+			"DBUS_SESSION_BUS_ADDRESS",
+			"-u",
+			"DBUS_STARTER_ADDRESS",
+			"--",
+			launch.executablePath,
+			...launch.args,
+		],
+	};
+}
+
+/**
  * Ensure the project-shared automation Chromium is running and reachable,
  * launching it under the daemon when needed, and take a lease on it.
  *
@@ -171,8 +203,7 @@ export async function ensureSharedBrowser(opts: {
 		...identity,
 		label: opts.headless ? "Shared headless Chromium" : "Shared Chromium",
 		proc: {
-			application: launch.executablePath,
-			args: launch.args,
+			...browserSpawnCommand(launch),
 			env: workerEnvFromParent(),
 			cwd: projectDir,
 			pty: false,

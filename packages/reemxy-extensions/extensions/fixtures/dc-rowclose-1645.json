@@ -1,0 +1,499 @@
+{
+ "source": "dc-phases-1645.json sha256 283f686f7a420f4334689fd5753d812e7edbe88e29413a22ceba1a9d65c705ae (open rows; briefs and failure text trimmed)",
+ "now": 1793969200000,
+ "running": [
+  "LeaderCrossFix-2"
+ ],
+ "phases": [
+  {
+   "name": "Follow-ups",
+   "tasks": [
+    {
+     "content": "Generated UX transition graph with dead ends and wrong returns",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [
+       "UX graph: no other-package or runtime-only concrete edges"
+      ],
+      "owner": "JoyousMouse",
+      "estimate": {
+       "optimisticSeconds": 300,
+       "likelySeconds": 480,
+       "pessimisticSeconds": 900,
+       "confidence": "medium",
+       "basis": "repeat of 7-min audit",
+       "updatedAt": 1793963110604
+      },
+      "executor": {
+       "workerId": "JoyousMouse",
+       "agentProfile": "gate-runner",
+       "resolvedModel": "nucat-local/qwen3.8-27b",
+       "startedAt": 1793965854739,
+       "finishedAt": 1793965854994,
+       "outcome": "aborted"
+      },
+      "progress": {
+       "at": 1793964872903,
+       "evidence": "UxGraphEdges patch 8cc8a7112 on c64ec5fe6 (/home/user/.omp/wt/t139def4c1/m/patches/0001-...): wrong returns 52->44, 13 tests pass; lead lands it on PR 112 branch after Pr112Rebase-2, then re-audit with collateral pair"
+      },
+      "deliveryCritic": {
+       "key": "[\"MelodicBobcat\",1793963204049,1793963204681]",
+       "startedAt": 1793963207615,
+       "verdict": "pending"
+      },
+      "resources": [],
+      "handoffPending": false
+     }
+    },
+    {
+     "content": "Collateral for \"Integrate finished lanes onto consolidated branch\": The Power group header carries a three-line sentence \"Required: 1.07–1.11 MW · Supplied: 2 MW · Surplus: 0.89–0.93 MW\" that wraps between \"Supplied:\" and \"2 MW\", separating the label from its value",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [
+       "Integrate finished lanes onto consolidated branch"
+      ],
+      "owner": "AuditIntegrate-7",
+      "estimate": {
+       "optimisticSeconds": 1257,
+       "likelySeconds": 1257,
+       "pessimisticSeconds": 2514,
+       "confidence": "low",
+       "basis": "Measured floor: p50 13m from ui-coder profile p50 (successful outcomes, n=725); previous attempt took 21m",
+       "updatedAt": 1793962068388
+      },
+      "executor": {
+       "workerId": "PowerHeaderWrap-2",
+       "agentProfile": "ui-coder",
+       "resolvedModel": "codex-lb/gpt-6.1-sol",
+       "thinkingLevel": "medium",
+       "startedAt": 1793949805543,
+       "finishedAt": 1793949810653,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793962068388,
+       "evidence": "fixed in e528cb3d0; recheck at 1440/430 in AuditIntegrate-7 brief. Measured floor: ui-coder p50 13m; previous attempt took 21m"
+      },
+      "resources": [
+       "/home/user/proj/sunbim/datacenter-decision-graph/tmp/power-header-wrap-2026-11-06"
+      ]
+     }
+    },
+    {
+     "content": "Power source rows: remove red selection frame and grey boxes",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [],
+      "owner": "AuditPowerRows",
+      "estimate": {
+       "optimisticSeconds": 360,
+       "likelySeconds": 720,
+       "pessimisticSeconds": 1500,
+       "confidence": "medium",
+       "basis": "visual audit at 2 widths + base build; AuditIntegrate-5 took 7.6 min",
+       "updatedAt": 1793961535626
+      },
+      "executor": {
+       "workerId": "AuditPowerRows",
+       "agentProfile": "qa-auditor",
+       "resolvedModel": "anthropic/claude-opus-5-5",
+       "thinkingLevel": "medium",
+       "startedAt": 1793961675473
+      },
+      "progress": {
+       "at": 1793960302913,
+       "evidence": "f1ee6e909 in ROOT (preview); lint/tsc/build 0 and facility-decisions-list 70/70 at f1ee; visual-qa: no frame/boxes at 1440/430; push follows PowerRowsHead gate"
+      },
+      "deliveryCritic": {
+       "key": "[\"InteriorPeafowl\",1793960099267,1793960277978]",
+       "startedAt": 1793960281578,
+       "verdict": "pending"
+      },
+      "handoffPending": false
+     }
+    },
+    {
+     "content": "Power source rows: title size and indent match sibling rows",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [
+       "Power source rows: remove red selection frame and grey boxes"
+      ],
+      "owner": "AuditPowerRows",
+      "estimate": {
+       "optimisticSeconds": 360,
+       "likelySeconds": 780,
+       "pessimisticSeconds": 1500,
+       "confidence": "medium",
+       "basis": "closes with AuditPowerRows audit (dispatched 14:39, qa-auditor median 8 min)",
+       "updatedAt": 1793962068388
+      },
+      "executor": {
+       "workerId": "InteriorToad",
+       "agentProfile": "gate-runner",
+       "resolvedModel": "anthropic/claude-opus-5-5",
+       "thinkingLevel": "low",
+       "startedAt": 1793961423085,
+       "finishedAt": 1793962007624,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793962068388,
+       "evidence": "landed in 54b0302ad (99e540388 CSS, fb6be4a43 test, 54b0302ad PRD); pushed 14:36; 70/70 specs green"
+      },
+      "deliveryCritic": {
+       "key": "[\"InteriorToad\",1793961423085,1793962007624]",
+       "startedAt": 1793962038861,
+       "verdict": "clean",
+       "evidence": ""
+      },
+      "review": "user",
+      "handoffPending": true,
+      "firstDeliveredAt": 1793962387083
+     }
+    },
+    {
+     "content": "Mac call: attribute 30 fps drop untraced",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [],
+      "owner": "MacCallAttrib-3",
+      "estimate": {
+       "optimisticSeconds": 1561,
+       "likelySeconds": 1700,
+       "pessimisticSeconds": 3122,
+       "confidence": "low",
+       "basis": "Measured floor p50 27m; 8 runs ~2 min each + setup + analysis",
+       "updatedAt": 1793963733112
+      },
+      "executor": {
+       "workerId": "MacCallAttrib-3",
+       "agentProfile": "profiler",
+       "resolvedModel": "anthropic/claude-opus-5-5",
+       "thinkingLevel": "medium",
+       "startedAt": 1793963875474,
+       "finishedAt": 1793964489692,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793963733112,
+       "evidence": "metric question answered: use camera.renderedFrame; cap history 1b475e5be/fafeede43; wrapper call-attrib-1510 ready"
+      },
+      "resources": [
+       "host:mccatie.local"
+      ]
+     }
+    },
+    {
+     "content": "PR 112: rebase onto main after PR 111 merge and fix",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [],
+      "owner": "Pr112Rebase-2",
+      "estimate": {
+       "optimisticSeconds": 900,
+       "likelySeconds": 1800,
+       "pessimisticSeconds": 3300,
+       "confidence": "low",
+       "basis": "rebase + conflicts + 4 gates ~12 min + push",
+       "updatedAt": 1793963110604
+      },
+      "executor": {
+       "workerId": "Pr112Rebase-2",
+       "agentProfile": "rebaser",
+       "resolvedModel": "anthropic/claude-opus-5-5",
+       "thinkingLevel": "medium",
+       "startedAt": 1793963889977,
+       "finishedAt": 1793965812068,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793963733112,
+       "evidence": "Pr112Rebase: PR 112 by user, branch repo-cleanup-2026-11-05 head d963530a6; worktree origin is ROOT (stale main f492cee22) -> must fetch Bitbucket URL directly"
+      }
+     }
+    },
+    {
+     "content": "Power source rows: no red keyboard-focus frame",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [],
+      "owner": "ExtendedFox",
+      "estimate": {
+       "optimisticSeconds": 600,
+       "likelySeconds": 1200,
+       "pessimisticSeconds": 2400,
+       "confidence": "medium",
+       "basis": "apply on PR 112 branch, push, audit R242/R243",
+       "updatedAt": 1793965585680
+      },
+      "executor": {
+       "workerId": "ExtendedFox",
+       "agentProfile": "gate-runner",
+       "resolvedModel": "anthropic/claude-opus-5-5",
+       "thinkingLevel": "low",
+       "startedAt": 1793968954144,
+       "finishedAt": 1793969069295,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793965585680,
+       "evidence": "PowerFocusFrame-2: b32b09b38 on c64ec5fe6, patch /home/user/.omp/wt/t15159be3d/m/tmp/power-focus/patch/0001-Drop-keyboard-focus-outline-from-Power-source-rows.patch; fail-before 2/2, pass-after 2/2, full spec 70/70"
+      },
+      "deliveryCritic": {
+       "key": "[\"ExtendedFox\",1793968954144,1793969069295]",
+       "startedAt": 1793969119738,
+       "verdict": "pending"
+      },
+      "handoffPending": false
+     }
+    },
+    {
+     "content": "UX graph: no other-package or runtime-only concrete edges",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [],
+      "owner": "UxGraphEdges",
+      "estimate": {
+       "optimisticSeconds": 900,
+       "likelySeconds": 1500,
+       "pessimisticSeconds": 2700,
+       "confidence": "medium",
+       "basis": "two generator rules + regenerate doc + unit test cases; coder p50 11 min, generator file ~1000 lines",
+       "updatedAt": 1793963733112
+      },
+      "executor": {
+       "workerId": "UxGraphEdges",
+       "agentProfile": "coder",
+       "resolvedModel": "codex-lb/gpt-6.1-terra",
+       "thinkingLevel": "medium",
+       "startedAt": 1793963889703,
+       "finishedAt": 1793964751411,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793963733112,
+       "evidence": "Delivery critic MelodicBobcat at 54b0302ad: PackageKnowledgeWorkspace callbacks listed as Settings->Facility edges though KnowledgeGraphApp.tsx:8588-8618 returns DataCenterProductWorkspace first (PRD 6304-6309); ProductSearch runtime destinations as concrete edges, doc 1426-1428 vs source 7332 (PRD 6313-6315)"
+      }
+     }
+    },
+    {
+     "content": "Mau standup transcript into plans, requirements, knowledgebase",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [],
+      "owner": "MauStandupIntake-2",
+      "estimate": {
+       "optimisticSeconds": 900,
+       "likelySeconds": 1500,
+       "pessimisticSeconds": 2700,
+       "confidence": "low",
+       "basis": "first pass 15 min did archive+profiles; remaining disposition + PRD + lint",
+       "updatedAt": 1793964872903
+      },
+      "executor": {
+       "workerId": "MauStandupIntake-2",
+       "agentProfile": "task",
+       "resolvedModel": "codex-lb/gpt-6.1-sol",
+       "thinkingLevel": "medium",
+       "startedAt": 1793964866472,
+       "finishedAt": 1793965592252,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793964872903,
+       "evidence": "partial 70ddb5b94 (transcript, TODO, profiles); -2 dispatched 15:34 to finish disposition, PRD, lint exclusion"
+      }
+     }
+    },
+    {
+     "content": "Facility orbit paints 30 fps: labels stop blocking frames",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [],
+      "owner": "OrbitFps24-2",
+      "estimate": {
+       "optimisticSeconds": 2100,
+       "likelySeconds": 2900,
+       "pessimisticSeconds": 3500,
+       "confidence": "low",
+       "basis": "implementation + throttled oracle + label specs",
+       "updatedAt": 1793965585680
+      },
+      "executor": {
+       "workerId": "OrbitFps24-2",
+       "agentProfile": "coder-strong",
+       "resolvedModel": "anthropic/claude-opus-5-5",
+       "thinkingLevel": "high",
+       "startedAt": 1793967821238,
+       "finishedAt": 1793968896594,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793965585680,
+       "evidence": "two attempts stopped on a scope question (now granted in brief); baseline build ready"
+      }
+     }
+    },
+    {
+     "content": "Facility labels after rotation: leaders cross the building",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [
+       "Diagnose leader crossings after Facility rotation",
+       "Facility orbit paints 30 fps: labels stop blocking frames"
+      ],
+      "owner": "LeaderCrossFix-2",
+      "estimate": {
+       "optimisticSeconds": 1800,
+       "likelySeconds": 2700,
+       "pessimisticSeconds": 3500,
+       "confidence": "low",
+       "basis": "label placement fix in facilityScene.ts after orbit fix (one writer per file); oracle exists at product-root.spec.ts:6494",
+       "updatedAt": 1793965585680
+      },
+      "executor": {
+       "workerId": "LeaderCrossFix-2",
+       "agentProfile": "ui-coder",
+       "resolvedModel": "anthropic/claude-sonnet-5-5",
+       "thinkingLevel": "medium",
+       "startedAt": 1793967820822
+      }
+     }
+    },
+    {
+     "content": "Diagnose leader crossings after Facility rotation",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [],
+      "owner": "LeaderCrossDiag",
+      "estimate": {
+       "optimisticSeconds": 900,
+       "likelySeconds": 1500,
+       "pessimisticSeconds": 2700,
+       "confidence": "low",
+       "basis": "read-only repro + placement code read; researcher ~15-25 min",
+       "updatedAt": 1793965585680
+      },
+      "executor": {
+       "workerId": "LeaderCrossDiag",
+       "agentProfile": "researcher",
+       "resolvedModel": "anthropic/claude-opus-5-5",
+       "thinkingLevel": "medium",
+       "startedAt": 1793965579306,
+       "finishedAt": 1793966337290,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793965585680,
+       "evidence": "User screenshot: 2D Level 1 after rotating, ~45 callouts at plan edge, leaders crossing the hall; product-root.spec.ts:6494 already fails on main"
+      }
+     }
+    },
+    {
+     "content": "Land focus, UX graph, standup patches on PR 112",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [
+       "PR 112: rebase onto main after PR 111 merge and fix"
+      ],
+      "owner": "Root112Switch-2",
+      "estimate": {
+       "optimisticSeconds": 900,
+       "likelySeconds": 1500,
+       "pessimisticSeconds": 2700,
+       "confidence": "medium",
+       "basis": "git am 4 patches on b140078ef (likely clean, disjoint files) + tsc/lint/precommit ~10 min + build + push + pipeline read; git-pr-owner anchors 4-15 min plus gates",
+       "updatedAt": 1793966557042
+      },
+      "executor": {
+       "workerId": "Root112Switch-2",
+       "agentProfile": "task",
+       "resolvedModel": "anthropic/claude-opus-5-5",
+       "thinkingLevel": "medium",
+       "startedAt": 1793968852848,
+       "finishedAt": 1793969034408,
+       "outcome": "completed"
+      },
+      "progress": {
+       "at": 1793966557042,
+       "evidence": "Pr112Rebase-2 pushed b140078ef; three patch sets on c64ec5fe6 ready (focus b32b09b38, UX graph 8cc8a7112, standup 2 patches)"
+      }
+     }
+    },
+    {
+     "content": "UX graph: tab transitions and conflict Back modeled",
+     "status": "pending",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [
+       "Land focus, UX graph, standup patches on PR 112"
+      ],
+      "owner": "UxGraphModel",
+      "estimate": {
+       "optimisticSeconds": 1200,
+       "likelySeconds": 2100,
+       "pessimisticSeconds": 3300,
+       "confidence": "low",
+       "basis": "two analyzer rules + one e2e run (ux-conflict-return.spec.ts) + regenerate + tests; UxGraphEdges took 15 min for two rules",
+       "updatedAt": 1793966557042
+      },
+      "progress": {
+       "at": 1793966557042,
+       "evidence": "critic JoyousMouse @54b0302ad: projectSetupSection tabs falsely unreachable (ProjectSetupSurface.tsx:28-37 Tabs.Root onValueChange); conflict Back wrong-return rows false (no riskConflictsOpen write in openContextualConfigurationEditor 6145-6180); observed journeys pinned to 0475077"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "Do items build",
+   "tasks": [
+    {
+     "content": "Integrate finished lanes onto consolidated branch",
+     "status": "in_progress",
+     "artifactCwd": "/home/user/proj/sunbim/datacenter-decision-graph",
+     "schedule": {
+      "dependencies": [],
+      "owner": "AuditIntegrate-7",
+      "estimate": {
+       "optimisticSeconds": 300,
+       "likelySeconds": 420,
+       "pessimisticSeconds": 900,
+       "confidence": "medium",
+       "basis": "AuditIntegrate-6 took 5.5 min with base build",
+       "updatedAt": 1793961535626
+      },
+      "executor": {
+       "workerId": "AuditIntegrate-7",
+       "agentProfile": "qa-auditor",
+       "resolvedModel": "codex-lb/gpt-6.1-sol",
+       "thinkingLevel": "medium",
+       "startedAt": 1793961723732
+      },
+      "progress": {
+       "at": 1793956822895,
+       "evidence": "close refused: ROOT moved to 56651dc53; re-audit once at the head that also carries the red-frame fix to avoid a second invalidation"
+      },
+      "resources": [
+       "/home/user/proj/sunbim/datacenter-decision-graph"
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -8,7 +8,7 @@ import { type ImageContent, toolWireSchema } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
-import { committedTodoPhases } from "../../tools/todo";
+import { committedTodoEdit, committedTodoPhases } from "../../tools/todo";
 import { isReplyWrite, toolResultReplies } from "@oh-my-pi/pi-tui/chat/reply-write";
 import { parseMCPProgress } from "@oh-my-pi/pi-tui/tools/mcp-progress";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
@@ -35,7 +35,7 @@ import {
 	runEvalWait,
 } from "../handle-bridge";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
-import { getActiveEvalShadowCell } from "../speculation/runtime-context";
+import { getActiveEvalShadowCell, runWithEvalJob } from "../speculation/runtime-context";
 import { isEvalBridgeToolCallable, withEvalBridgeToolCall } from "../tool-bridge-policy";
 import { EVAL_WORKPOOL_BRIDGE_NAME, type EvalWorkpoolResult, runEvalWorkpool } from "../workpool-bridge";
 import {
@@ -68,6 +68,7 @@ export interface ToolBridgeOptions {
 	 * would draw them, so such calls fail instead of reporting a reply nobody sees.
 	 */
 	onReply?: (text: string) => void;
+	evalJobId?: string;
 }
 
 type ToolValue =
@@ -336,7 +337,9 @@ async function runSessionTool(
 ): Promise<{ name: string; args: unknown; result: AgentToolResult }> {
 	// Wire aliases share every guard, status and bookkeeping path with the canonical tool.
 	const name = tool.name;
-	if (!isEvalBridgeToolCallable(tool)) {
+	if (!isEvalBridgeToolCallable(tool, args)) {
+		// Session changes and requirement audit admission/intake need direct
+		// agent-loop events; a bridged call cannot commit their canonical state.
 		throw new ToolError(`\`${name}\` cannot run through the eval bridge; call the direct \`${name}\` tool.`);
 	}
 	// FREEFORM tools (e.g. `edit`) take their raw text as `{ input }`, as providers deliver it.
@@ -401,12 +404,14 @@ async function runSessionTool(
 			try {
 				// The script parses the result, so it gets the whole result, not the model's display of it.
 				const context = options.session.getToolContext?.();
-				return await tool.execute(
-					toolCallId,
-					validatedArgs,
-					options.signal,
-					onUpdate,
-					context && { ...context, programmatic: true, parentToolCallId: options.parentToolCallId },
+				return await runWithEvalJob(options.evalJobId, () =>
+					tool.execute(
+						toolCallId,
+						validatedArgs,
+						options.signal,
+						onUpdate,
+						context && { ...context, programmatic: true, parentToolCallId: options.parentToolCallId },
+					),
 				);
 			} finally {
 				settled = true;
@@ -417,7 +422,7 @@ async function runSessionTool(
 			// rehydration reads; without this the in-memory update is lost on the
 			// next resume/rewind/fork and stale todos trigger a false reminder.
 			const phases = committedTodoPhases(result);
-			if (phases) options.session.commitTodoPhases?.(phases);
+			if (phases) options.session.persistTodoPhases?.(phases, committedTodoEdit(result));
 		}
 		const replies = reply === undefined ? toolResultReplies(result.details) : [reply];
 		if (replies.length > 0) {

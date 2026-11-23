@@ -16,6 +16,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { SessionHeader } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { parseSessionContent } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import * as settingsStream from "@oh-my-pi/pi-coding-agent/session/settings-stream-fn";
 import type { TerminalLaunchRequest } from "@oh-my-pi/pi-coding-agent/subprocess/terminal-launch";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -136,8 +137,8 @@ async function persistedHeader(manager: SessionManager): Promise<SessionHeader> 
 	await manager.flush();
 	const file = manager.getSessionFile();
 	if (!file) throw new Error("Expected a persisted session");
-	const records = Bun.JSONL.parse(await Bun.file(file).text()) as Array<{ type: string }>;
-	const header = records.find(record => record.type === "session");
+	const { entries } = parseSessionContent(await Bun.file(file).text());
+	const header = entries.find(record => record.type === "session");
 	if (!header) throw new Error("Missing session header");
 	return header as SessionHeader;
 }

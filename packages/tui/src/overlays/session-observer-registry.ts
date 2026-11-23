@@ -18,6 +18,8 @@ export interface SubagentProgressPayload {
 	sessionFile?: string;
 	/** See {@link SubagentLifecyclePayload.detached}. */
 	detached?: boolean;
+	/** Activity in a kept-alive session; never a new row executor run. */
+	followUpTurn?: boolean;
 }
 
 /** Payload emitted on TASK_SUBAGENT_LIFECYCLE_CHANNEL */
@@ -25,7 +27,13 @@ export interface SubagentLifecyclePayload {
 	id: string;
 	agent: string;
 	agentSource: AgentSource;
+	/** Wall clock of the emitted lifecycle transition, in Unix milliseconds. */
+	at?: number;
+	resolvedModelIdentity?: string;
+	resolvedThinkingLevel?: string;
 	description?: string;
+	taskText?: string;
+	row?: string;
 	status: "started" | "completed" | "failed" | "aborted";
 	sessionFile?: string;
 	parentToolCallId?: string;
@@ -37,6 +45,8 @@ export interface SubagentLifecyclePayload {
 	 * unset — surfaces like the subagent HUD only list detached spawns.
 	 */
 	detached?: boolean;
+	/** Activity in a kept-alive session; never a new row executor run. */
+	followUpTurn?: boolean;
 }
 
 /** Minimal event subscription surface supplied by the host. */
@@ -80,20 +90,20 @@ const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 
 export class SessionObserverRegistry {
 	#sessions = new Map<string, ObservableSession>();
-	#listeners = new Set<(kind: SessionObserverChangeKind) => void>();
+	#listeners = new Set<(kind: SessionObserverChangeKind, id?: string) => void>();
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#sortOrderById = new Map<string, number>();
 	#parentSortOrderById = new Map<string, number>();
 	#nextSortOrder = 0;
 
 	/** Add a change listener. Returns unsubscribe function. */
-	onChange(cb: (kind: SessionObserverChangeKind) => void): () => void {
+	onChange(cb: (kind: SessionObserverChangeKind, id?: string) => void): () => void {
 		this.#listeners.add(cb);
 		return () => this.#listeners.delete(cb);
 	}
 
-	#notifyListeners(kind: SessionObserverChangeKind): void {
-		for (const cb of this.#listeners) cb(kind);
+	#notifyListeners(kind: SessionObserverChangeKind, id?: string): void {
+		for (const cb of this.#listeners) cb(kind, id);
 	}
 
 	#ensureSortOrder(id: string): number {
@@ -245,7 +255,7 @@ export class SessionObserverRegistry {
 								lastUpdate: Date.now(),
 							});
 						}
-						this.#notifyListeners("lifecycle");
+						this.#notifyListeners("lifecycle", payload.id);
 					}),
 				),
 			);
@@ -288,7 +298,7 @@ export class SessionObserverRegistry {
 								progressAt: now,
 							});
 						}
-						this.#notifyListeners("progress");
+						this.#notifyListeners("progress", id);
 					}),
 				),
 			);

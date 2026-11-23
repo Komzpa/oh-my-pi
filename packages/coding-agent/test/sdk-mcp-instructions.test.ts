@@ -2,6 +2,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock,
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-ai";
 import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -57,6 +59,24 @@ async function eventually<T>(read: () => T, done: (value: T) => boolean): Promis
 	return value;
 }
 
+async function conversationPrompt(session: AgentSession): Promise<string> {
+	const mockModel = createMockModel({ responses: [{ content: ["Done"] }] });
+	let text = "";
+	session.agent.streamFn = (model, context, options) => {
+		text = context.messages
+			.map(message =>
+				typeof message.content === "string"
+					? message.content
+					: message.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n"),
+			)
+			.join("\n");
+		return mockModel.stream(model, context, options);
+	};
+	await session.prompt("hello");
+	expect(session.systemPrompt.join("\n")).not.toContain(SERVER_INSTRUCTIONS);
+	return text;
+}
+
 describe("createAgentSession MCP server instructions (deferred UI)", () => {
 	let tempDir: string;
 	let authStorage: AuthStorage;
@@ -76,6 +96,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 		originalAgentDir = getAgentDir();
 		setAgentDir(isolatedAgentDir);
 		authStorage = await AuthStorage.create(":memory:");
+		authStorage.keys.setRuntime("openai", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 	});
 
@@ -176,7 +197,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			enableMCP: true,
 		});
 		try {
-			const prompt = session.systemPrompt.join("\n");
+			const prompt = await conversationPrompt(session);
 			expect(prompt).toContain(`### other\n${SERVER_INSTRUCTIONS}`);
 			expect(prompt).not.toContain("### instr");
 			expect(prompt.split(SERVER_INSTRUCTIONS)).toHaveLength(2);
@@ -212,13 +233,15 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			// instructions and the mounted tool's route.
 			const prompt = await eventually(
 				() => session.systemPrompt.join("\n"),
-				text => text.includes(SERVER_INSTRUCTIONS) && text.includes(DO_THING_ROUTE),
+				text => text.includes(DO_THING_ROUTE),
 			);
 
-			expect(prompt).toContain(SERVER_INSTRUCTIONS);
+			const context = await conversationPrompt(session);
+			expect(context).toContain(SERVER_INSTRUCTIONS);
 			// The instructions are framed under the MCP section, and guidance keeps
 			// the escaped original tool name while routing through the exact command
 			// name the tool is mounted under.
+			expect(context).toContain("MCP Server Instructions");
 			expect(prompt).toContain(DO_THING_ROUTE);
 		} finally {
 			await session.dispose();
@@ -250,13 +273,12 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			// carries both the server instructions and the user's append prompt.
 			const prompt = session.systemPrompt.join("\n");
 
-			expect(prompt).toContain(SERVER_INSTRUCTIONS);
-			// The user's append prompt is its own block, never the trailing
-			// paragraph of the server-controlled section above it.
-			const boundary = prompt.indexOf(`\n${USER_APPEND_SECTION_HEADING}\n\n`);
-			expect(boundary).toBeGreaterThan(prompt.indexOf(SERVER_INSTRUCTIONS));
-			expect(prompt.slice(prompt.indexOf("## MCP Server Instructions"), boundary)).not.toContain(USER_APPEND_MARKER);
-			expect(prompt.slice(boundary)).toContain(USER_APPEND_MARKER);
+			expect(prompt).not.toContain(SERVER_INSTRUCTIONS);
+			expect(prompt).toContain(USER_APPEND_SECTION_HEADING);
+			expect(prompt).toContain(USER_APPEND_MARKER);
+			const context = await conversationPrompt(session);
+			expect(context).toContain(SERVER_INSTRUCTIONS);
+			expect(context).not.toContain(USER_APPEND_MARKER);
 		} finally {
 			await session.dispose();
 		}
@@ -347,10 +369,10 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 		try {
 			const prompt = await eventually(
 				() => session.systemPrompt.join("\n"),
-				text => text.includes(SERVER_INSTRUCTIONS) && text.includes(MCP_ROUTE_SECTION),
+				text => text.includes(MCP_ROUTE_SECTION),
 			);
 
-			expect(prompt).toContain(SERVER_INSTRUCTIONS);
+			expect(await conversationPrompt(session)).toContain(SERVER_INSTRUCTIONS);
 			const renderedMappings = prompt.split("\n").filter(line => line.startsWith('- "row_'));
 			expect(renderedMappings).toHaveLength(64);
 			expect(renderedMappings[0]).toBe('- "row_aa" → `mcp__instr_row_aa` — Bounded guidance fixture tool aa.');
@@ -476,7 +498,8 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 				names => names.includes(MCP_TOOL_NAME),
 			);
 			expect(activeNames).toContain("read");
-			expect(activeNames).not.toContain("write");
+			// A read-only list gets `write` only as the fork's agent:// reply transport.
+			if (activeNames.includes("write")) expect(session.isAgentOnlyWrite).toBe(true);
 			expect(activeNames).toContain(MCP_TOOL_NAME);
 			expect(session.getToolCommandEntries()).toEqual([]);
 			const mcpTool = session.getToolByName(MCP_TOOL_NAME);
@@ -512,15 +535,10 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 				() => session.getActiveToolNames(),
 				names => names.includes(MCP_TOOL_NAME),
 			);
-			const prompt = await eventually(
-				() => session.systemPrompt.join("\n"),
-				text => text.includes(SERVER_INSTRUCTIONS),
-			);
-
+			const prompt = session.systemPrompt.join("\n");
 			expect(activeNames).toContain(MCP_TOOL_NAME);
 			expect(session.getToolCommandEntries().map(entry => entry.name)).not.toContain(MCP_TOOL_NAME);
-			expect(prompt).toContain("## MCP Server Instructions");
-			expect(prompt).toContain(SERVER_INSTRUCTIONS);
+			expect(await conversationPrompt(session)).toContain(SERVER_INSTRUCTIONS);
 			expect(prompt).not.toContain(MCP_ROUTE_SECTION);
 		} finally {
 			await session.dispose();
@@ -587,7 +605,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 					mcpManager: manager,
 				});
 				try {
-					const prompt = session.systemPrompt.join("\n");
+					const prompt = await conversationPrompt(session);
 					return prompt.slice(prompt.indexOf("## MCP Server Instructions"));
 				} finally {
 					await session.dispose();
@@ -630,8 +648,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			const config: MCPStdioServerConfig = { type: "stdio", command: process.execPath, args: [FIXTURE_PATH] };
 			await manager.connectServers({ demo: config }, {}, undefined, 0);
 			await session.refreshMCPTools(manager.getTools());
-			expect(session.systemPrompt.join("\n")).toContain(`## MCP Server Instructions`);
-			expect(session.systemPrompt.join("\n")).toContain(`### demo\n${SERVER_INSTRUCTIONS}`);
+			expect(await conversationPrompt(session)).toContain(`### demo\n${SERVER_INSTRUCTIONS}`);
 
 			await manager.disconnectAll();
 			await session.refreshMCPTools([]);

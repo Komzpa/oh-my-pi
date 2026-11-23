@@ -1,0 +1,992 @@
+{
+	"base_pending_idle": {
+		"before": [
+			{
+				"identity": {
+					"instanceId": "635785e3-67ab-40da-9188-ddc97ca4788a",
+					"sessionId": "01a1b867-5004-74cc-9d0c-48c5d2cb34e6",
+					"generation": 0
+				},
+				"pid": 3972667,
+				"cwd": "/tmp/restartdone2-base-3",
+				"request": null,
+				"loadedExtensions": []
+			}
+		],
+		"ack": {
+			"identity": {
+				"instanceId": "635785e3-67ab-40da-9188-ddc97ca4788a",
+				"sessionId": "01a1b867-5004-74cc-9d0c-48c5d2cb34e6",
+				"generation": 0
+			},
+			"pid": 3972667,
+			"cwd": "/tmp/restartdone2-base-3",
+			"request": {
+				"version": 1,
+				"requestId": "fixture-pending-1",
+				"sessionId": "01a1b867-5004-74cc-9d0c-48c5d2cb34e6",
+				"state": "queued",
+				"requestedAt": 1794095141711,
+				"updatedAt": 1794095141713,
+				"rootWasRunning": false,
+				"budget": {
+					"deadlineAt": 1794095784711,
+					"plan": [
+						{
+							"stage": "prepare",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "isolation",
+							"estimateMs": 0
+						},
+						{
+							"stage": "notifications",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "root_quiescence",
+							"estimateMs": 600000
+						},
+						{
+							"stage": "worker_grace",
+							"estimateMs": 5000
+						},
+						{
+							"stage": "worker_abort",
+							"estimateMs": 30000
+						},
+						{
+							"stage": "flush_sessions",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "capture_children",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "flush",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "snapshot_isolation",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "replace_runtime",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "restore_children",
+							"estimateMs": 1000
+						}
+					]
+				},
+				"drainStatus": {
+					"runningWorkers": [],
+					"queuedInputCount": 0,
+					"stage": "prepare",
+					"stageStartedAt": 1794095141712,
+					"stageDeadlineAt": 1794095142711,
+					"remainingEstimateMs": 642000,
+					"deadlineAt": 1794095784711,
+					"abandoned": [],
+					"stageElapsedMs": 5
+				},
+				"runningWorkerCount": 0
+			}
+		},
+		"after": [
+			{
+				"identity": {
+					"instanceId": "d7cc5150-eea2-4451-bff4-b197d7e8ced8",
+					"sessionId": "01a1b867-5004-74cc-9d0c-48c5d2cb34e6",
+					"generation": 0
+				},
+				"pid": 3972667,
+				"cwd": "/tmp/restartdone2-base-3",
+				"request": {
+					"version": 1,
+					"requestId": "fixture-pending-1",
+					"sessionId": "01a1b867-5004-74cc-9d0c-48c5d2cb34e6",
+					"state": "completed",
+					"requestedAt": 1794095141711,
+					"updatedAt": 1794095142620,
+					"rootWasRunning": false,
+					"budget": {
+						"deadlineAt": 1794095784711,
+						"plan": [
+							{
+								"stage": "prepare",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "isolation",
+								"estimateMs": 0
+							},
+							{
+								"stage": "notifications",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "root_quiescence",
+								"estimateMs": 600000
+							},
+							{
+								"stage": "worker_grace",
+								"estimateMs": 5000
+							},
+							{
+								"stage": "worker_abort",
+								"estimateMs": 30000
+							},
+							{
+								"stage": "flush_sessions",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "capture_children",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "flush",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "snapshot_isolation",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "replace_runtime",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "restore_children",
+								"estimateMs": 1000
+							}
+						]
+					},
+					"runningWorkerCount": 0,
+					"drainStatus": {
+						"runningWorkers": [],
+						"queuedInputCount": 0,
+						"stageDeadlineAt": 1794095782711,
+						"remainingEstimateMs": 2000,
+						"deadlineAt": 1794095784711,
+						"stage": "snapshot_isolation",
+						"stageStartedAt": 1794095141720,
+						"abandoned": [],
+						"stageElapsedMs": 3229
+					}
+				},
+				"loadedExtensions": []
+			}
+		],
+		"calls": [
+			{
+				"successor": true,
+				"messages": [
+					{
+						"role": "user",
+						"content": "<system-reminder>\nToday: 2026-11-08; current working directory: '/tmp/restartdone2-base-3'. Do not repeat this information in your reply.\n</system-reminder>\n\nContinue fixture plan",
+						"timestamp": 1,
+						"attribution": "user"
+					},
+					{
+						"role": "user",
+						"content": [
+							{
+								"type": "text",
+								"text": "Harness (not Darafei): Restart fixture-pending-1 is queued. The visible text of each restart-queue notice states its requestId and state; follow the visible state. If the state is queued, draining, checkpointed, or restarting, finish the provider call and tool batch already in progress, then checkpoint this session's current assignment in its durable transcript. Do not start another model turn, emit new tools, spawn or wake agents, or claim the whole goal is complete. Report unresolved external effects or missing receipts as explicit blockers; never infer completion when an effect result was not persisted. The controller will restart the process after the current work is safe. If the state is completed, cancelled, or failed, the earlier restriction for that requestId no longer applies: resume normal work without preparing or issuing a restart."
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095141714
+					},
+					{
+						"role": "developer",
+						"content": [
+							{
+								"type": "text",
+								"text": "Pending fixture context"
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095141713
+					}
+				]
+			},
+			{
+				"successor": true,
+				"messages": [
+					{
+						"role": "user",
+						"content": "<system-reminder>\nToday: 2026-11-08; current working directory: '/tmp/restartdone2-base-3'. Do not repeat this information in your reply.\n</system-reminder>\n\nContinue fixture plan",
+						"timestamp": 1,
+						"attribution": "user"
+					},
+					{
+						"role": "user",
+						"content": [
+							{
+								"type": "text",
+								"text": "Harness (not Darafei): Restart fixture-pending-1 is queued. The visible text of each restart-queue notice states its requestId and state; follow the visible state. If the state is queued, draining, checkpointed, or restarting, finish the provider call and tool batch already in progress, then checkpoint this session's current assignment in its durable transcript. Do not start another model turn, emit new tools, spawn or wake agents, or claim the whole goal is complete. Report unresolved external effects or missing receipts as explicit blockers; never infer completion when an effect result was not persisted. The controller will restart the process after the current work is safe. If the state is completed, cancelled, or failed, the earlier restriction for that requestId no longer applies: resume normal work without preparing or issuing a restart."
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095141714
+					},
+					{
+						"role": "developer",
+						"content": [
+							{
+								"type": "text",
+								"text": "Pending fixture context"
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095141713
+					},
+					{
+						"role": "assistant",
+						"content": [
+							{
+								"type": "text",
+								"text": "fixture plan resumed"
+							}
+						],
+						"api": "mock",
+						"provider": "mock",
+						"model": "mock-model",
+						"usage": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"totalTokens": 0,
+							"cost": {
+								"input": 0,
+								"output": 0,
+								"cacheRead": 0,
+								"cacheWrite": 0,
+								"total": 0
+							}
+						},
+						"stopReason": "stop",
+						"timestamp": 1794095142612,
+						"duration": 8.924435000000017
+					},
+					{
+						"role": "user",
+						"content": [
+							{
+								"type": "text",
+								"text": "Harness (not Darafei): Restart fixture-pending-1 completed; the earlier restriction no longer applies; resume normal work."
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095142621
+					}
+				]
+			},
+			{
+				"successor": true,
+				"messages": [
+					{
+						"role": "user",
+						"content": "<system-reminder>\nToday: 2026-11-08; current working directory: '/tmp/restartdone2-base-3'. Do not repeat this information in your reply.\n</system-reminder>\n\nContinue fixture plan",
+						"timestamp": 1,
+						"attribution": "user"
+					},
+					{
+						"role": "developer",
+						"content": [
+							{
+								"type": "text",
+								"text": "Pending fixture context"
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095141713
+					},
+					{
+						"role": "assistant",
+						"content": [
+							{
+								"type": "text",
+								"text": "fixture plan resumed"
+							}
+						],
+						"api": "mock",
+						"provider": "mock",
+						"model": "mock-model",
+						"usage": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"totalTokens": 0,
+							"cost": {
+								"input": 0,
+								"output": 0,
+								"cacheRead": 0,
+								"cacheWrite": 0,
+								"total": 0
+							}
+						},
+						"stopReason": "stop",
+						"timestamp": 1794095142612,
+						"duration": 8.924435000000017,
+						"completedAt": 1794095142624,
+						"contextSnapshot": {
+							"promptTokens": 0,
+							"nonMessageTokens": 2201,
+							"toolSchemaTokens": 0,
+							"compactionEpoch": 0
+						}
+					},
+					{
+						"role": "assistant",
+						"content": [
+							{
+								"type": "text",
+								"text": "fixture plan resumed"
+							}
+						],
+						"api": "mock",
+						"provider": "mock",
+						"model": "mock-model",
+						"usage": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"totalTokens": 0,
+							"cost": {
+								"input": 0,
+								"output": 0,
+								"cacheRead": 0,
+								"cacheWrite": 0,
+								"total": 0
+							}
+						},
+						"stopReason": "stop",
+						"timestamp": 1794095142638,
+						"duration": 0.6508239999999432,
+						"completedAt": 1794095142639,
+						"contextSnapshot": {
+							"promptTokens": 0,
+							"nonMessageTokens": 2201,
+							"toolSchemaTokens": 0,
+							"compactionEpoch": 0
+						},
+						"errorId": 0
+					},
+					{
+						"role": "user",
+						"content": [
+							{
+								"type": "text",
+								"text": "Harness (not Darafei): Restart fixture-pending-1 completed at 03:45; build c81f5644b1c8c6e8a0ef427102e5b2d0f2a4d15d; nothing pending — resume your plan."
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095142668
+					}
+				]
+			}
+		]
+	},
+	"fixed_pending_running": {
+		"before": [
+			{
+				"identity": {
+					"instanceId": "d38c1119-d13e-4ed9-8319-b23f1fa410de",
+					"sessionId": "01a1b86c-4175-7432-9c27-a250aff87c42",
+					"generation": 0
+				},
+				"pid": 4043690,
+				"cwd": "/tmp/restartdone2-proof-busy",
+				"request": null,
+				"loadedExtensions": []
+			}
+		],
+		"ack": {
+			"identity": {
+				"instanceId": "d38c1119-d13e-4ed9-8319-b23f1fa410de",
+				"sessionId": "01a1b86c-4175-7432-9c27-a250aff87c42",
+				"generation": 0
+			},
+			"pid": 4043690,
+			"cwd": "/tmp/restartdone2-proof-busy",
+			"request": {
+				"version": 1,
+				"requestId": "fixture-pending-1",
+				"sessionId": "01a1b86c-4175-7432-9c27-a250aff87c42",
+				"state": "queued",
+				"requestedAt": 1794095465699,
+				"updatedAt": 1794095465701,
+				"rootWasRunning": true,
+				"budget": {
+					"deadlineAt": 1794096108699,
+					"plan": [
+						{
+							"stage": "prepare",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "isolation",
+							"estimateMs": 0
+						},
+						{
+							"stage": "notifications",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "root_quiescence",
+							"estimateMs": 600000
+						},
+						{
+							"stage": "worker_grace",
+							"estimateMs": 5000
+						},
+						{
+							"stage": "worker_abort",
+							"estimateMs": 30000
+						},
+						{
+							"stage": "flush_sessions",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "capture_children",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "flush",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "snapshot_isolation",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "replace_runtime",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "restore_children",
+							"estimateMs": 1000
+						}
+					]
+				},
+				"drainStatus": {
+					"runningWorkers": [],
+					"queuedInputCount": 1,
+					"stage": "prepare",
+					"stageStartedAt": 1794095465699,
+					"stageDeadlineAt": 1794095466699,
+					"remainingEstimateMs": 642000,
+					"deadlineAt": 1794096108699,
+					"abandoned": [],
+					"stageElapsedMs": 3
+				},
+				"runningWorkerCount": 0
+			}
+		},
+		"after": [
+			{
+				"identity": {
+					"instanceId": "5c85fa3c-38e9-4f0a-adb0-8c7e833a0939",
+					"sessionId": "01a1b86c-4175-7432-9c27-a250aff87c42",
+					"generation": 0
+				},
+				"pid": 4043690,
+				"cwd": "/tmp/restartdone2-proof-busy",
+				"request": {
+					"version": 1,
+					"requestId": "fixture-pending-1",
+					"sessionId": "01a1b86c-4175-7432-9c27-a250aff87c42",
+					"state": "completed",
+					"requestedAt": 1794095465699,
+					"updatedAt": 1794095466526,
+					"rootWasRunning": true,
+					"budget": {
+						"deadlineAt": 1794096108699,
+						"plan": [
+							{
+								"stage": "prepare",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "isolation",
+								"estimateMs": 0
+							},
+							{
+								"stage": "notifications",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "root_quiescence",
+								"estimateMs": 600000
+							},
+							{
+								"stage": "worker_grace",
+								"estimateMs": 5000
+							},
+							{
+								"stage": "worker_abort",
+								"estimateMs": 30000
+							},
+							{
+								"stage": "flush_sessions",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "capture_children",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "flush",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "snapshot_isolation",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "replace_runtime",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "restore_children",
+								"estimateMs": 1000
+							}
+						]
+					},
+					"runningWorkerCount": 0,
+					"drainStatus": {
+						"runningWorkers": [],
+						"queuedInputCount": 0,
+						"stageDeadlineAt": 1794096106699,
+						"remainingEstimateMs": 2000,
+						"deadlineAt": 1794096108699,
+						"stage": "snapshot_isolation",
+						"stageStartedAt": 1794095465721,
+						"abandoned": [],
+						"stageElapsedMs": 3114
+					}
+				},
+				"loadedExtensions": []
+			}
+		],
+		"calls": [
+			{
+				"successor": true,
+				"messages": [
+					{
+						"role": "user",
+						"content": "<system-reminder>\nToday: 2026-11-08; current working directory: '/tmp/restartdone2-proof-busy'. Do not repeat this information in your reply.\n</system-reminder>\n\nContinue fixture plan",
+						"timestamp": 1,
+						"attribution": "user"
+					},
+					{
+						"role": "user",
+						"content": [
+							{
+								"type": "text",
+								"text": "Active text-only plan"
+							}
+						],
+						"attribution": "user",
+						"timestamp": 1794095465159
+					},
+					{
+						"role": "assistant",
+						"content": [
+							{
+								"type": "text",
+								"text": "fixture plan resumed"
+							}
+						],
+						"api": "mock",
+						"provider": "mock",
+						"model": "mock-model",
+						"usage": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"totalTokens": 0,
+							"cost": {
+								"input": 0,
+								"output": 0,
+								"cacheRead": 0,
+								"cacheWrite": 0,
+								"total": 0
+							}
+						},
+						"stopReason": "stop",
+						"timestamp": 1794095465185,
+						"duration": 518.4794529999999,
+						"completedAt": 1794095465706,
+						"contextSnapshot": {
+							"promptTokens": 0,
+							"nonMessageTokens": 2201,
+							"toolSchemaTokens": 0,
+							"compactionEpoch": 0
+						}
+					},
+					{
+						"role": "user",
+						"content": "Steering text-only iteration",
+						"timestamp": 1794095465186,
+						"attribution": "user"
+					},
+					{
+						"role": "user",
+						"content": [
+							{
+								"type": "text",
+								"text": "Harness (not Darafei): Restart fixture-pending-1 completed at 03:51; build c81f5644b1c8c6e8a0ef427102e5b2d0f2a4d15d; nothing pending — resume your plan."
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095466566
+					}
+				]
+			},
+			{
+				"successor": true,
+				"messages": [
+					{
+						"role": "user",
+						"content": "<system-reminder>\nToday: 2026-11-08; current working directory: '/tmp/restartdone2-proof-busy'. Do not repeat this information in your reply.\n</system-reminder>\n\nContinue fixture plan",
+						"timestamp": 1,
+						"attribution": "user"
+					},
+					{
+						"role": "user",
+						"content": [
+							{
+								"type": "text",
+								"text": "Active text-only plan"
+							}
+						],
+						"attribution": "user",
+						"timestamp": 1794095465159
+					},
+					{
+						"role": "assistant",
+						"content": [
+							{
+								"type": "text",
+								"text": "fixture plan resumed"
+							}
+						],
+						"api": "mock",
+						"provider": "mock",
+						"model": "mock-model",
+						"usage": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"totalTokens": 0,
+							"cost": {
+								"input": 0,
+								"output": 0,
+								"cacheRead": 0,
+								"cacheWrite": 0,
+								"total": 0
+							}
+						},
+						"stopReason": "stop",
+						"timestamp": 1794095465185,
+						"duration": 518.4794529999999,
+						"completedAt": 1794095465706,
+						"contextSnapshot": {
+							"promptTokens": 0,
+							"nonMessageTokens": 2201,
+							"toolSchemaTokens": 0,
+							"compactionEpoch": 0
+						}
+					},
+					{
+						"role": "user",
+						"content": "Steering text-only iteration",
+						"timestamp": 1794095465186,
+						"attribution": "user"
+					},
+					{
+						"role": "user",
+						"content": [
+							{
+								"type": "text",
+								"text": "Harness (not Darafei): Restart fixture-pending-1 completed at 03:51; build c81f5644b1c8c6e8a0ef427102e5b2d0f2a4d15d; nothing pending — resume your plan."
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095466566
+					},
+					{
+						"role": "assistant",
+						"content": [
+							{
+								"type": "text",
+								"text": "fixture plan resumed"
+							}
+						],
+						"api": "mock",
+						"provider": "mock",
+						"model": "mock-model",
+						"usage": {
+							"input": 0,
+							"output": 0,
+							"cacheRead": 0,
+							"cacheWrite": 0,
+							"totalTokens": 0,
+							"cost": {
+								"input": 0,
+								"output": 0,
+								"cacheRead": 0,
+								"cacheWrite": 0,
+								"total": 0
+							}
+						},
+						"stopReason": "stop",
+						"timestamp": 1794095466581,
+						"duration": 0.24647800000002462,
+						"completedAt": 1794095466583,
+						"contextSnapshot": {
+							"promptTokens": 0,
+							"nonMessageTokens": 2201,
+							"toolSchemaTokens": 0,
+							"compactionEpoch": 0
+						},
+						"errorId": 0
+					},
+					{
+						"role": "developer",
+						"content": [
+							{
+								"type": "text",
+								"text": "Pending fixture context"
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095465701
+					}
+				]
+			}
+		]
+	},
+	"fixed_idle": {
+		"before": [
+			{
+				"identity": {
+					"instanceId": "28cbb91f-7f4a-42e3-99d6-e41d70ad16a5",
+					"sessionId": "01a1b86c-5362-7000-83c7-75708c791b06",
+					"generation": 0
+				},
+				"pid": 4044967,
+				"cwd": "/tmp/restartdone2-proof-idle",
+				"request": null,
+				"loadedExtensions": []
+			}
+		],
+		"ack": {
+			"identity": {
+				"instanceId": "28cbb91f-7f4a-42e3-99d6-e41d70ad16a5",
+				"sessionId": "01a1b86c-5362-7000-83c7-75708c791b06",
+				"generation": 0
+			},
+			"pid": 4044967,
+			"cwd": "/tmp/restartdone2-proof-idle",
+			"request": {
+				"version": 1,
+				"requestId": "fixture-pending-0",
+				"sessionId": "01a1b86c-5362-7000-83c7-75708c791b06",
+				"state": "queued",
+				"requestedAt": 1794095470349,
+				"updatedAt": 1794095470351,
+				"rootWasRunning": false,
+				"budget": {
+					"deadlineAt": 1794096113349,
+					"plan": [
+						{
+							"stage": "prepare",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "isolation",
+							"estimateMs": 0
+						},
+						{
+							"stage": "notifications",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "root_quiescence",
+							"estimateMs": 600000
+						},
+						{
+							"stage": "worker_grace",
+							"estimateMs": 5000
+						},
+						{
+							"stage": "worker_abort",
+							"estimateMs": 30000
+						},
+						{
+							"stage": "flush_sessions",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "capture_children",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "flush",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "snapshot_isolation",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "replace_runtime",
+							"estimateMs": 1000
+						},
+						{
+							"stage": "restore_children",
+							"estimateMs": 1000
+						}
+					]
+				},
+				"drainStatus": {
+					"runningWorkers": [],
+					"queuedInputCount": 0,
+					"stage": "prepare",
+					"stageStartedAt": 1794095470349,
+					"stageDeadlineAt": 1794095471349,
+					"remainingEstimateMs": 642000,
+					"deadlineAt": 1794096113349,
+					"abandoned": [],
+					"stageElapsedMs": 5
+				},
+				"runningWorkerCount": 0
+			}
+		},
+		"after": [
+			{
+				"identity": {
+					"instanceId": "56d17fc7-4b42-44b3-a024-99dc241a6b6c",
+					"sessionId": "01a1b86c-5362-7000-83c7-75708c791b06",
+					"generation": 0
+				},
+				"pid": 4044967,
+				"cwd": "/tmp/restartdone2-proof-idle",
+				"request": {
+					"version": 1,
+					"requestId": "fixture-pending-0",
+					"sessionId": "01a1b86c-5362-7000-83c7-75708c791b06",
+					"state": "completed",
+					"requestedAt": 1794095470349,
+					"updatedAt": 1794095471175,
+					"rootWasRunning": false,
+					"budget": {
+						"deadlineAt": 1794096113349,
+						"plan": [
+							{
+								"stage": "prepare",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "isolation",
+								"estimateMs": 0
+							},
+							{
+								"stage": "notifications",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "root_quiescence",
+								"estimateMs": 600000
+							},
+							{
+								"stage": "worker_grace",
+								"estimateMs": 5000
+							},
+							{
+								"stage": "worker_abort",
+								"estimateMs": 30000
+							},
+							{
+								"stage": "flush_sessions",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "capture_children",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "flush",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "snapshot_isolation",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "replace_runtime",
+								"estimateMs": 1000
+							},
+							{
+								"stage": "restore_children",
+								"estimateMs": 1000
+							}
+						]
+					},
+					"runningWorkerCount": 0,
+					"drainStatus": {
+						"runningWorkers": [],
+						"queuedInputCount": 0,
+						"stageDeadlineAt": 1794096111349,
+						"remainingEstimateMs": 2000,
+						"deadlineAt": 1794096113349,
+						"stage": "snapshot_isolation",
+						"stageStartedAt": 1794095470359,
+						"abandoned": [],
+						"stageElapsedMs": 3171
+					}
+				},
+				"loadedExtensions": []
+			}
+		],
+		"calls": [
+			{
+				"successor": true,
+				"messages": [
+					{
+						"role": "user",
+						"content": "<system-reminder>\nToday: 2026-11-08; current working directory: '/tmp/restartdone2-proof-idle'. Do not repeat this information in your reply.\n</system-reminder>\n\nContinue fixture plan",
+						"timestamp": 1,
+						"attribution": "user"
+					},
+					{
+						"role": "user",
+						"content": [
+							{
+								"type": "text",
+								"text": "Harness (not Darafei): Restart fixture-pending-0 completed at 03:51; build c81f5644b1c8c6e8a0ef427102e5b2d0f2a4d15d; nothing pending — resume your plan."
+							}
+						],
+						"attribution": "agent",
+						"timestamp": 1794095471213
+					}
+				]
+			}
+		]
+	}
+}

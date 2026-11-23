@@ -9,6 +9,7 @@ import type {
 	ExtensionHandler,
 	SessionStartEvent,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { VcsGitRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -46,23 +47,13 @@ function buildHarness(): { handlers: CapturedHandlers; activeTools: string[] } {
 }
 
 function makeCtx(cwd: string): ExtensionContext {
+	const sessionManager = SessionManager.inMemory(cwd);
+	sessionManager.appendCustomEntry("autoresearch-control", { mode: "on", goal: "speed up the thing" });
 	return {
 		cwd,
 		hasUI: false,
 		hasPendingMessages: () => false,
-		sessionManager: {
-			getSessionId: () => "session-bas-test",
-			getBranch: () => [
-				{
-					type: "custom",
-					customType: "autoresearch-control",
-					id: "ctrl-1",
-					parentId: null,
-					timestamp: new Date(0).toISOString(),
-					data: { mode: "on", goal: "speed up the thing" },
-				},
-			],
-		},
+		sessionManager,
 	} as unknown as ExtensionContext;
 }
 

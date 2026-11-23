@@ -306,7 +306,9 @@ export async function createDraft(source: DraftSource): Promise<Draft> {
 	}
 
 	const [statusText, staged] = await Promise.all([
-		repo.statusPorcelain({ untracked: "all", nulTerminated: true }, source.signal),
+		// A draft is what gets committed: bypass the shared status cache, which only file-writing
+		// tools invalidate, so edits made by other processes are never missed.
+		vcs.statusPorcelainFresh(repo, { untracked: "all", nulTerminated: true }, source.signal),
 		repo.changedFiles({ cached: true }, source.signal),
 	]);
 	const dirty = parseDirtyPathsWithStatus(statusText);

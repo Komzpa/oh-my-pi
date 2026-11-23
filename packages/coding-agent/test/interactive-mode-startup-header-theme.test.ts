@@ -8,6 +8,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { StartupChangelogSelection } from "@oh-my-pi/pi-coding-agent/utils/changelog";
+import { FrameTelemetry, frameTelemetry } from "@oh-my-pi/pi-tui/frame-telemetry";
 import * as themeModule from "@oh-my-pi/pi-tui/theme";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -102,6 +103,19 @@ describe("InteractiveMode startup header after the terminal reports a light back
 		if (line === undefined) throw new Error(`Expected a rendered row containing ${JSON.stringify(text)}`);
 		return line;
 	}
+
+	it("restores FPS updates after stopping and initializing the same mode", async () => {
+		const telemetry = new FrameTelemetry({ loggerWarn: () => {} });
+		vi.spyOn(frameTelemetry, "onStatusTextChange").mockImplementation(listener =>
+			telemetry.onStatusTextChange(listener),
+		);
+		await mode.init();
+		mode.stop();
+		await mode.init();
+		const update = vi.spyOn(mode.statusLine, "setFpsText");
+		telemetry.logLoopBlock(1_234, 0, "test:reinit");
+		expect(update).toHaveBeenCalledWith(telemetry.statusText);
+	});
 
 	it("recolors the What's New heading", async () => {
 		await mode.init();

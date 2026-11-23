@@ -1,0 +1,2424 @@
+{
+  "source": "DC session 01a1921c-7697-72a8-b4a3-4efdbbf06221, final snapshot 2026-11-06 03:06 + final wait roster",
+  "phases": [
+    {
+      "name": "Follow-ups",
+      "tasks": [
+        {
+          "content": "Guide Hall rack model step: readable layout",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "owner": "RackTilesGate",
+            "executor": {
+              "workerId": "RackTilesGate",
+              "agentProfile": "gate-runner",
+              "startedAt": 1793867345675,
+              "finishedAt": 1793868337618,
+              "outcome": "completed"
+            },
+            "review": "accepted",
+            "reviewPagePending": true
+          }
+        },
+        {
+          "content": "Facility 2D: too much empty space around site",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "executor": {
+              "workerId": "BuildingSquare-2",
+              "agentProfile": "task",
+              "startedAt": 1793865990452,
+              "finishedAt": 1793866766639,
+              "outcome": "failed"
+            },
+            "review": "accepted",
+            "reviewPagePending": true
+          }
+        },
+        {
+          "content": "Callouts during rotation match settled layout",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "executor": {
+              "workerId": "CalloutsAudit-2",
+              "agentProfile": "qa-auditor",
+              "startedAt": 1793881970983,
+              "finishedAt": 1793882454295,
+              "outcome": "completed"
+            },
+            "owner": "FollowupPush",
+            "review": "accepted",
+            "reviewPagePending": true
+          }
+        },
+        {
+          "content": "Main deploy pipeline: restore lost deploy script",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "owner": "AuditDeploy",
+            "executor": {
+              "workerId": "AuditDeploy",
+              "agentProfile": "qa-auditor",
+              "startedAt": 1793870178406,
+              "finishedAt": 1793870279931,
+              "outcome": "completed"
+            },
+            "review": "accepted",
+            "reviewPagePending": true
+          }
+        },
+        {
+          "content": "Yellow wires render as zigzag sawtooth at grey box",
+          "status": "abandoned",
+          "schedule": {
+            "dependencies": [],
+            "owner": "WireZigzag3",
+            "executor": {
+              "workerId": "WireZigzag3",
+              "agentProfile": "coder-strong",
+              "startedAt": 1793877347029,
+              "finishedAt": 1793877358408,
+              "outcome": "completed"
+            }
+          },
+          "blocker": "Two lanes could not reproduce; need Darafei's project/view/layer for the screenshot"
+        },
+        {
+          "content": "Plan click opens same panel as left list, abbreviations expanded",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "owner": "ReviewPageBuild",
+            "executor": {
+              "workerId": "ReviewPageBuild",
+              "agentProfile": "ui-coder",
+              "startedAt": 1793889893426,
+              "finishedAt": 1793890799995,
+              "outcome": "completed"
+            },
+            "review": "accepted",
+            "reviewPagePending": true
+          }
+        },
+        {
+          "content": "Camera stays above ground, orbit pivot at viewport centre",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "executor": {
+              "workerId": "IntegrateCamera",
+              "agentProfile": "git-pr-owner",
+              "startedAt": 1793877535047
+            },
+            "review": "accepted",
+            "reviewPagePending": true
+          }
+        },
+        {
+          "content": "Stop eval browser software-GL kills on XMOVA",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [
+              "Integrate finished lanes onto consolidated branch"
+            ],
+            "owner": "Main",
+            "executor": {
+              "workerId": "AuditGlKills-2",
+              "agentProfile": "qa-auditor",
+              "startedAt": 1793905214003,
+              "finishedAt": 1793905509578,
+              "outcome": "completed"
+            }
+          },
+          "blocker": "Audited pass 4x; done gate rejects dirty shared-checkout fingerprint until review checkout is ff'd clean after PR push"
+        },
+        {
+          "content": "Repo cleanup: personal paths, agent noise, neutral names",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "owner": "Main",
+            "executor": {
+              "workerId": "CleanupGate",
+              "agentProfile": "gate-runner",
+              "startedAt": 1793908506547,
+              "finishedAt": 1793909640181,
+              "outcome": "failed"
+            }
+          }
+        },
+        {
+          "content": "Generated UX transition graph with dead ends and wrong returns",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [
+              "Abbreviations: hover tooltip via abbr element"
+            ],
+            "owner": "Main",
+            "executor": {
+              "workerId": "UxTransitionGraph",
+              "agentProfile": "coder",
+              "startedAt": 1793904830436,
+              "finishedAt": 1793907746109,
+              "outcome": "completed"
+            }
+          },
+          "blocker": "Waiting for running job UseGridPanel-2-2 patch; closes with union gate"
+        },
+        {
+          "content": "CRAH hover contour ratio fails before integration",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [
+              "Use grid: row opens explainer panel, small inline toggle"
+            ],
+            "owner": "Main",
+            "executor": {
+              "workerId": "CrahHoverFix",
+              "agentProfile": "coder",
+              "startedAt": 1793910670261,
+              "finishedAt": 1793910670660,
+              "outcome": "completed"
+            }
+          },
+          "blocker": "Waiting for running job UseGridPanel-2-2 patch; closes with union gate"
+        },
+        {
+          "content": "Retire stray :8793 speakers review server",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "owner": "peer:01a1858f"
+          }
+        },
+        {
+          "content": "Collateral for \"Review pages exist only with server-saved answers\": The missing page name in the heading breaks across two lines at its hyphen (\"no-\" / \"such-page\") at 440 px, so the name being looked up is split.",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [
+              "Retire stray :8793 speakers review server"
+            ],
+            "owner": "peer:01a1858f"
+          }
+        },
+        {
+          "content": "Use grid: row opens explainer panel, small inline toggle",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [],
+            "owner": "UnionGateRerun",
+            "executor": {
+              "workerId": "UseGridPick",
+              "agentProfile": "rebaser",
+              "startedAt": 1793914329113,
+              "finishedAt": 1793914640393,
+              "outcome": "completed"
+            }
+          },
+          "blocker": "Waiting for running full e2e runner PID 3335550 to write exit-code.txt (watcher bg_501)"
+        },
+        {
+          "content": "Measure XMOVA render performance on mccatie M1 GPU",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [],
+            "owner": "AuditMacPerf-3",
+            "executor": {
+              "workerId": "AuditMacPerf-3",
+              "agentProfile": "qa-auditor",
+              "startedAt": 1793919686110
+            }
+          },
+          "blocker": "Audited pass R231/R233 (AuditMacPerf-2); done gate demands UI screenshot pair for a measurement (tool bug reported)"
+        },
+        {
+          "content": "Repo cleanup round 2: rigorous keep/remove rule",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [],
+            "owner": "CleanupLeftovers",
+            "executor": {
+              "workerId": "CleanupLeftovers",
+              "agentProfile": "coder",
+              "startedAt": 1793916763177
+            }
+          },
+          "blocker": "Pushed 41255a4a2, PR #112 description updated; waiting Bitbucket pipeline build 1297 (watcher bg_503)"
+        },
+        {
+          "content": "Diagnose stalled union gate run on 5eb7d595d",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "owner": "Main"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sync 2026-11-05",
+      "tasks": [
+        {
+          "content": "Archive 2026-11-05 sync transcript (Max, Aleksandra)",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [],
+            "owner": "AuditTranscriptArchive",
+            "executor": {
+              "workerId": "AuditTranscriptArchive",
+              "agentProfile": "qa-auditor",
+              "startedAt": 1793919687138,
+              "finishedAt": 1793919695816,
+              "outcome": "failed"
+            }
+          },
+          "blocker": "Delivered and audited pass; the todo done gate demands a screenshot pair for a markdown file (tool bug reported)"
+        }
+      ]
+    },
+    {
+      "name": "Review redo 19:11",
+      "tasks": [
+        {
+          "content": "Abbreviation expansions on every node, sorted",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "owner": "AbbrevAllNodes-2",
+            "executor": {
+              "workerId": "AbbrevAllNodes-2",
+              "agentProfile": "coder",
+              "startedAt": 1793896071865,
+              "finishedAt": 1793896072220,
+              "outcome": "aborted"
+            },
+            "review": "accepted",
+            "reviewPagePending": true
+          }
+        },
+        {
+          "content": "Collateral for \"Substation: reference-based look, clickable with panel\": The detail panel adds \u201cIT \u2014 Information Technology\u201d although its displayed explanation contains no IT abbreviation.",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [
+              "Adaptive layout: Levels 1-4 and plant on roof"
+            ],
+            "owner": "UnionGateRerun",
+            "executor": {
+              "workerId": "AbbrHover",
+              "agentProfile": "ui-coder",
+              "startedAt": 1793919083845,
+              "finishedAt": 1793919106909,
+              "outcome": "completed"
+            }
+          },
+          "blocker": "Waiting for running job UseGridPanel-2-2 patch; closes with union gate"
+        }
+      ]
+    },
+    {
+      "name": "Complaints answers 19:56",
+      "tasks": [
+        {
+          "content": "Investigate lost asks: site yard to inputs, floor count",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [],
+            "owner": "AuditLostAsks",
+            "executor": {
+              "workerId": "AuditLostAsks",
+              "agentProfile": "qa-auditor",
+              "startedAt": 1793919687695,
+              "finishedAt": 1793919818866,
+              "outcome": "completed"
+            }
+          },
+          "blocker": "Audited PASS (AuditLostAsksTrace); done gate demands UI screenshot pair for a research answer (tool bug reported)"
+        },
+        {
+          "content": "Reanalyse Max complaints as one 'spaghetti/learning' theme",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [],
+            "owner": "AuditMaxTheme",
+            "executor": {
+              "workerId": "AuditMaxTheme",
+              "agentProfile": "qa-auditor",
+              "startedAt": 1793919687433
+            }
+          },
+          "blocker": "Audited PASS (AuditMaxTheme2); done gate demands UI screenshot pair for a research answer (tool bug reported)"
+        }
+      ]
+    },
+    {
+      "name": "Do items build",
+      "tasks": [
+        {
+          "content": "Adaptive layout: Levels 1-4 and plant on roof",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [
+              "Integrate finished lanes onto consolidated branch"
+            ],
+            "owner": "Main",
+            "executor": {
+              "workerId": "AdaptiveYardFix",
+              "agentProfile": "coder",
+              "startedAt": 1793907205110,
+              "finishedAt": 1793907734499,
+              "outcome": "completed"
+            }
+          },
+          "blocker": "Waiting for running job UseGridPanel-2-2 patch; closes with union gate"
+        },
+        {
+          "content": "Adaptive Levels: dry coolers on roof, routing",
+          "status": "abandoned",
+          "schedule": {
+            "dependencies": [
+              "Adaptive Levels: N-level layout and admission"
+            ],
+            "owner": "AdaptiveLevelsLayout-2"
+          }
+        },
+        {
+          "content": "Adaptive Levels: battery rooms and stairs per level",
+          "status": "abandoned",
+          "schedule": {
+            "dependencies": [],
+            "owner": "AdaptiveLevelsLayout-2"
+          }
+        },
+        {
+          "content": "Adaptive Levels: Level 1-4 and Roof inspection views",
+          "status": "abandoned",
+          "schedule": {
+            "dependencies": [],
+            "owner": "AdaptiveLevelsLayout-2"
+          }
+        },
+        {
+          "content": "Adaptive Levels: draw-call budget, PRD and TODO close",
+          "status": "abandoned",
+          "schedule": {
+            "dependencies": [],
+            "owner": "AdaptiveLevelsLayout-2"
+          }
+        },
+        {
+          "content": "Apply PowerPatchProof retro rows to AGENTS.md and skill",
+          "status": "completed",
+          "schedule": {
+            "dependencies": [],
+            "owner": "RetroRowsAgents",
+            "executor": {
+              "workerId": "RetroRowsAgents",
+              "agentProfile": "minor-coder",
+              "startedAt": 1793908488869,
+              "finishedAt": 1793908489138,
+              "outcome": "completed"
+            }
+          }
+        },
+        {
+          "content": "Integrate finished lanes onto consolidated branch",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [
+              "CRAH hover contour ratio fails before integration"
+            ],
+            "owner": "UnionGateRerun",
+            "executor": {
+              "workerId": "UnknownReviewUrl",
+              "agentProfile": "minor-coder",
+              "startedAt": 1793919085790,
+              "finishedAt": 1793919144983,
+              "outcome": "aborted"
+            }
+          },
+          "blocker": "Waiting for running full e2e runner PID 3335550 to write exit-code.txt (watcher bg_501)"
+        }
+      ]
+    },
+    {
+      "name": "Delivered review answers 22:08",
+      "tasks": [
+        {
+          "content": "Abbreviations: hover tooltip via abbr element",
+          "status": "blocked",
+          "schedule": {
+            "dependencies": [
+              "Collateral for \"Substation: reference-based look, clickable with panel\": The detail panel adds \u201cIT \u2014 Information Technology\u201d although its displayed explanation contains no IT abbreviation."
+            ],
+            "owner": "UnionGateRerun",
+            "executor": {
+              "workerId": "MaxSimWriteup",
+              "agentProfile": "coder",
+              "startedAt": 1793919084995,
+              "finishedAt": 1793919107053,
+              "outcome": "aborted"
+            }
+          },
+          "blocker": "Waiting for running job UseGridPanel-2-2 patch; closes with union gate"
+        }
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "classification": "linked",
+      "rows": [
+        "Create branch datacenter-2026-10-31 from origin/main"
+      ],
+      "rowVerdicts": {
+        "Create branch datacenter-2026-10-31 from origin/main": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Archive and work 2026-10-27 sync into tasks"
+      ],
+      "rowVerdicts": {
+        "Archive and work 2026-10-27 sync into tasks": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Triage unprocessed-feedback into tasks with Darafei"
+      ],
+      "rowVerdicts": {
+        "Triage unprocessed-feedback into tasks with Darafei": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Triage unprocessed-feedback into tasks with Darafei"
+      ],
+      "rowVerdicts": {
+        "Triage unprocessed-feedback into tasks with Darafei": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Triage unprocessed-feedback into tasks with Darafei"
+      ],
+      "rowVerdicts": {
+        "Triage unprocessed-feedback into tasks with Darafei": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Archive and triage XMOVA-Sync-eb1d4b20 transcript"
+      ],
+      "rowVerdicts": {
+        "Archive and triage XMOVA-Sync-eb1d4b20 transcript": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Archive and triage XMOVA-Sync-eb1d4b20 transcript"
+      ],
+      "rowVerdicts": {
+        "Archive and triage XMOVA-Sync-eb1d4b20 transcript": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Same-glyph verdict badge becomes one coloured glyph"
+      ],
+      "rowVerdicts": {
+        "Same-glyph verdict badge becomes one coloured glyph": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Left-align Priority fit with Priority profile"
+      ],
+      "rowVerdicts": {
+        "Left-align Priority fit with Priority profile": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Fix freeze on Facility Not decided click"
+      ],
+      "rowVerdicts": {
+        "Fix freeze on Facility Not decided click": {
+          "status": "fail"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Cut post-click task under 200 ms"
+      ],
+      "rowVerdicts": {
+        "Cut post-click task under 200 ms": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Fix broken-image placeholder on Facility first load"
+      ],
+      "rowVerdicts": {
+        "Fix broken-image placeholder on Facility first load": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Fix Facility labels overlapping after rotating the model"
+      ],
+      "rowVerdicts": {
+        "Fix Facility labels overlapping after rotating the model": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Fix Facility labels overlapping after rotating the model"
+      ],
+      "rowVerdicts": {
+        "Fix Facility labels overlapping after rotating the model": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Match SimReady assets to Facility model catalogue"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Match SimReady assets to Facility model catalogue"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Match SimReady assets to Facility model catalogue"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Fix SimReady prop materials and add GB300 rack option"
+      ],
+      "rowVerdicts": {
+        "Fix SimReady prop materials and add GB300 rack option": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Make GB300 rack option state its contents"
+      ],
+      "rowVerdicts": {
+        "Make GB300 rack option state its contents": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Add Oxide Cloud Computer as rack option"
+      ],
+      "rowVerdicts": {
+        "Add Oxide Cloud Computer as rack option": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Add Oxide Cloud Computer as rack option"
+      ],
+      "rowVerdicts": {
+        "Add Oxide Cloud Computer as rack option": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Add researched GB300 price and specs"
+      ],
+      "rowVerdicts": {
+        "Add researched GB300 price and specs": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Add used ZT A100 rack option from eBay"
+      ],
+      "rowVerdicts": {
+        "Add used ZT A100 rack option from eBay": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Open PR datacenter-2026-10-31 into main"
+      ],
+      "rowVerdicts": {
+        "Open PR datacenter-2026-10-31 into main": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack choice drives Finance capex and power"
+      ],
+      "rowVerdicts": {
+        "Rack choice drives Finance capex and power": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack choice drives Finance capex and power"
+      ],
+      "rowVerdicts": {
+        "Rack choice drives Finance capex and power": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Add Supermicro HGX B300 server quote option"
+      ],
+      "rowVerdicts": {
+        "Add Supermicro HGX B300 server quote option": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Facility hall rack count follows chosen rack power"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Review page: rack question Generic vs Preset"
+      ],
+      "rowVerdicts": {
+        "Review page: rack question Generic vs Preset": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack stat cards: tiles plus compare panel, prose separate"
+      ],
+      "rowVerdicts": {
+        "Rack stat cards: tiles plus compare panel, prose separate": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack chooser: one generic, uniform tiles, not fullscreen"
+      ],
+      "rowVerdicts": {
+        "Rack chooser: one generic, uniform tiles, not fullscreen": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack chooser: one generic, uniform tiles, not fullscreen"
+      ],
+      "rowVerdicts": {
+        "Rack chooser: one generic, uniform tiles, not fullscreen": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack tile headline unit on one line"
+      ],
+      "rowVerdicts": {
+        "Rack tile headline unit on one line": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Restore Oxide rack model in tiles"
+      ],
+      "rowVerdicts": {
+        "Restore Oxide rack model in tiles": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "ZT A100 rack model from Darafei's white-device photos"
+      ],
+      "rowVerdicts": {
+        "ZT A100 rack model from Darafei's white-device photos": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Merge Sasha's main into PR #109"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Assurance and evidence controls out of Facility view"
+      ],
+      "rowVerdicts": {
+        "Assurance and evidence controls out of Facility view": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Decision option cards not stretched at 1568"
+      ],
+      "rowVerdicts": {
+        "Decision option cards not stretched at 1568": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Assurance and evidence controls out of Facility view"
+      ],
+      "rowVerdicts": {
+        "Assurance and evidence controls out of Facility view": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Assurance and evidence controls out of Facility view"
+      ],
+      "rowVerdicts": {
+        "Assurance and evidence controls out of Facility view": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Assurance and evidence controls out of Facility view"
+      ],
+      "rowVerdicts": {
+        "Assurance and evidence controls out of Facility view": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Assurance and evidence controls out of Facility view"
+      ],
+      "rowVerdicts": {
+        "Assurance and evidence controls out of Facility view": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Assurance and evidence controls out of Facility view"
+      ],
+      "rowVerdicts": {
+        "Assurance and evidence controls out of Facility view": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Find better transformer and power-line models",
+        "Substation wiring: grid line to intake to transformers"
+      ],
+      "rowVerdicts": {
+        "Substation wiring: grid line to intake to transformers": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Refresh PR #109 and review checkout"
+      ],
+      "rowVerdicts": {
+        "Refresh PR #109 and review checkout": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Option-card thumbnails stay inside card border"
+      ],
+      "rowVerdicts": {
+        "Option-card thumbnails stay inside card border": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack chooser fits panel without scroll"
+      ],
+      "rowVerdicts": {
+        "Rack chooser fits panel without scroll": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Form ratings drive area, power, price results (R81)"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "No selected-row edge stripe anywhere, banned globally",
+        "Rack metadata fields not duplicated under Other"
+      ],
+      "rowVerdicts": {
+        "Rack metadata fields not duplicated under Other": {
+          "status": "unverifiable"
+        },
+        "No selected-row edge stripe anywhere, banned globally": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Option-card thumbnails stay inside card border"
+      ],
+      "rowVerdicts": {
+        "Option-card thumbnails stay inside card border": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Selected rows: vertical stripe back, horizontal lines gone",
+        "Generic rack parameters edited inline in its card"
+      ],
+      "rowVerdicts": {
+        "Generic rack parameters edited inline in its card": {
+          "status": "pass"
+        },
+        "Selected rows: vertical stripe back, horizontal lines gone": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Form options: Generic labels and sourced ratings shown",
+        "Hall AHU capacity drives count, area, power, price (worker HallAhuCount)"
+      ],
+      "rowVerdicts": {
+        "Form options: Generic labels and sourced ratings shown": {
+          "status": "pass"
+        },
+        "Hall AHU capacity drives count, area, power, price (worker HallAhuCount)": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Facility Layers on-rows get left stripe like Learning"
+      ],
+      "rowVerdicts": {
+        "Facility Layers on-rows get left stripe like Learning": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "PR #109 description: complete, Slack-ready lists"
+      ],
+      "rowVerdicts": {
+        "PR #109 description: complete, Slack-ready lists": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack picker: drop Selected/Current columns, Generic defaults filled"
+      ],
+      "rowVerdicts": {
+        "Rack picker: drop Selected/Current columns, Generic defaults filled": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Restore XMOVA origin remote and pull PR #110"
+      ],
+      "rowVerdicts": {
+        "Restore XMOVA origin remote and pull PR #110": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack model owns kW/rack; retire Rack density row"
+      ],
+      "rowVerdicts": {
+        "Rack model owns kW/rack; retire Rack density row": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Project setup option cards and buttons match Facility picker"
+      ],
+      "rowVerdicts": {
+        "Project setup option cards and buttons match Facility picker": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Facility archetype previews clearly distinct"
+      ],
+      "rowVerdicts": {
+        "Facility archetype previews clearly distinct": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "One selected-row shade in Facility sidebar"
+      ],
+      "rowVerdicts": {
+        "One selected-row shade in Facility sidebar": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Drop 'form' suffix from Facility decision titles"
+      ],
+      "rowVerdicts": {
+        "Drop 'form' suffix from Facility decision titles": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Merge overlapping UPS decisions into one UPS decision"
+      ],
+      "rowVerdicts": {
+        "Merge overlapping UPS decisions into one UPS decision": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Merge overlapping UPS decisions into one UPS decision",
+        "UPS options show sourced physical ratings"
+      ],
+      "rowVerdicts": {
+        "UPS options show sourced physical ratings": {
+          "status": "unverifiable"
+        },
+        "Merge overlapping UPS decisions into one UPS decision": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Power section: required MW over Grid, Solar, Battery, Gas"
+      ],
+      "rowVerdicts": {
+        "Power section: required MW over Grid, Solar, Battery, Gas": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Remove committed merge markers from doc/TODO.md"
+      ],
+      "rowVerdicts": {
+        "Remove committed merge markers from doc/TODO.md": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Open conflicting decision explains clash and repair"
+      ],
+      "rowVerdicts": {
+        "Open conflicting decision explains clash and repair": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Owned IT CAPEX shows rack count \u00d7 price per rack"
+      ],
+      "rowVerdicts": {
+        "Owned IT CAPEX shows rack count \u00d7 price per rack": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "CAPEX breakdown tree folds products into additive values"
+      ],
+      "rowVerdicts": {
+        "CAPEX breakdown tree folds products into additive values": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Open conflicting decision explains clash and repair"
+      ],
+      "rowVerdicts": {
+        "Open conflicting decision explains clash and repair": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Grid cost cards explain their difference"
+      ],
+      "rowVerdicts": {
+        "Grid cost cards explain their difference": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "CAPEX donut leaders do not cross"
+      ],
+      "rowVerdicts": {
+        "CAPEX donut leaders do not cross": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack panel: readable reasons, Generic kW after recovery, unclipped tiles"
+      ],
+      "rowVerdicts": {
+        "Rack panel: readable reasons, Generic kW after recovery, unclipped tiles": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack panel: readable reasons, Generic kW after recovery, unclipped tiles"
+      ],
+      "rowVerdicts": {
+        "Rack panel: readable reasons, Generic kW after recovery, unclipped tiles": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Propose fewer purpose inputs: lens, workload, archetype"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Propose fewer purpose inputs: lens, workload, archetype"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Research data-center business models taxonomy (web)"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Research data-center business models taxonomy (web)"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Research data-center business models taxonomy (web)"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Research data-center business models taxonomy (web)"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Finance: seven business models, retail vs wholesale rates"
+      ],
+      "rowVerdicts": {
+        "Finance: seven business models, retail vs wholesale rates": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Power section of decisions list: consistent rows, dividers, icons"
+      ],
+      "rowVerdicts": {
+        "Power section of decisions list: consistent rows, dividers, icons": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack model tiles: dramatic visual redesign"
+      ],
+      "rowVerdicts": {
+        "Rack model tiles: dramatic visual redesign": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Darafei verdict: Rack model owns kW/rack (accept/redo/drop)"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Fill researched numbers into package data"
+      ],
+      "rowVerdicts": {
+        "Fill researched numbers into package data": {
+          "status": "unverifiable"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Redo rack tile layout (rejected by Darafei)"
+      ],
+      "rowVerdicts": {
+        "Redo rack tile layout (rejected by Darafei)": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Land lanes, final full gate, push PR #109"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Utility grid interconnection listed under Power \u2192 Grid"
+      ],
+      "rowVerdicts": {
+        "Utility grid interconnection listed under Power \u2192 Grid": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Cooling group: renamed, hall cooling rows moved, sectioned"
+      ],
+      "rowVerdicts": {
+        "Cooling group: renamed, hall cooling rows moved, sectioned": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Power sources as yes/no toggles in Power section"
+      ],
+      "rowVerdicts": {
+        "Power sources as yes/no toggles in Power section": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Battery gives 0 MW despite settings: find why, fix"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Separate UPS from battery storage in Power"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rename 'Network rooms' decision group to 'Network'"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rename 'Racks & rows' decision group to 'Compute'"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack model chooser: tiles not stretched on wide screens"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Trade-offs toggle: no red frame on Shift, no underline"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Heat rejection: show only equipment the chosen plant uses"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Operator OPEX chart: additive cost tree like CAPEX"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Operator OPEX chart: additive cost tree like CAPEX"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Operator OPEX chart: additive cost tree like CAPEX"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Power yes/no sources as inline switches"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Operator OPEX chart: additive cost tree like CAPEX"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack tiles: lifetime cost metric, TFLOPS/kW, readable numbers"
+      ],
+      "rowVerdicts": {
+        "Rack tiles: lifetime cost metric, TFLOPS/kW, readable numbers": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "UPS summary: editable protected MW and runtime"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Power switches restyled to MM skin"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "UPS header: remove protected MW/runtime summary"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Power switches restyled to MM skin"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Power switches restyled to MM skin"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Redundancy level moved above Power source groups"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Fire suppression: rename, own Fire protection section"
+      ],
+      "rowVerdicts": {
+        "Fire suppression: rename, own Fire protection section": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Decision list: distinct section, subgroup, row levels"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "OPEX ring colours: slice closer to own hue than neighbours"
+      ],
+      "rowVerdicts": {
+        "OPEX ring colours: slice closer to own hue than neighbours": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "CAPEX ring hover: clean slice highlight, no spill"
+      ],
+      "rowVerdicts": {
+        "CAPEX ring hover: clean slice highlight, no spill": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Source set to No drops out of header and calculation"
+      ],
+      "rowVerdicts": {
+        "Source set to No drops out of header and calculation": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack tiles fit panel height at 1568, no scrollbar"
+      ],
+      "rowVerdicts": {
+        "Rack tiles fit panel height at 1568, no scrollbar": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Adaptive 60 MW layout: no oversized empty rooms",
+        "Adaptive layout: heat pipes reach heat plant",
+        "Presets reach 100% configuration"
+      ],
+      "rowVerdicts": {
+        "Adaptive 60 MW layout: no oversized empty rooms": {
+          "status": "fail"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Decision list: L1 band, strong L2 labels, L3 indent"
+      ],
+      "rowVerdicts": {
+        "Decision list: L1 band, strong L2 labels, L3 indent": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Cooling plant pipes inside room, ending at ports"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Cooling plant pipes inside room, ending at ports"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack tile: Generic kW/rack clearly editable, no spinner"
+      ],
+      "rowVerdicts": {
+        "Rack tile: Generic kW/rack clearly editable, no spinner": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Rack tiles fit panel height at 1568, no scrollbar"
+      ],
+      "rowVerdicts": {
+        "Rack tiles fit panel height at 1568, no scrollbar": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "No spillover across UI: design rule, oracle, fixes"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "No spillover across UI: design rule, oracle, fixes"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Decision list: L1 band, strong L2 labels, L3 indent"
+      ],
+      "rowVerdicts": {
+        "Decision list: L1 band, strong L2 labels, L3 indent": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Levels requirement: PRD clause and TODO.md row"
+      ],
+      "rowVerdicts": {
+        "Levels requirement: PRD clause and TODO.md row": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Brag video: inventory user-visible changes since 2026-10-29",
+        "Brag video: storyboard, capture, render"
+      ],
+      "rowVerdicts": {
+        "Brag video: storyboard, capture, render": {
+          "status": "fail"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Viewport census: which screen sizes PRD and e2e track"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Levels requirement: PRD clause and TODO.md row"
+      ],
+      "rowVerdicts": {
+        "Levels requirement: PRD clause and TODO.md row": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "DCE security, fire, fibre equipment: extract, PRD, TODO"
+      ],
+      "rowVerdicts": {
+        "DCE security, fire, fibre equipment: extract, PRD, TODO": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Target screens: Full HD, 4K, Maksim MacBook, Flip 7, iPhone"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Adaptive Facility: no crash, callout leaders clear of hall"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Guide Hall rack model step: readable layout"
+      ]
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Land crash and Guide fixes on PR #109, push"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Adaptive Facility: no crash, callout leaders clear of hall"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Facility 2D: too much empty space around site"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Callouts during rotation match settled layout"
+      ],
+      "rowVerdicts": {
+        "Callouts during rotation match settled layout": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Facility 2D: too much empty space around site"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Callouts during rotation match settled layout"
+      ],
+      "rowVerdicts": {
+        "Callouts during rotation match settled layout": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Substation wires: no 90\u00b0 bends in mid-air"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Adaptive Facility: no crash, callout leaders clear of hall"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Substation wires: no 90\u00b0 bends in mid-air"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Adaptive Facility: no crash, callout leaders clear of hall"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Facility 2D: too much empty space around site"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Main deploy pipeline: restore lost deploy script"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Dev server stops reloading every few seconds"
+      ],
+      "rowVerdicts": {
+        "Dev server stops reloading every few seconds": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Guide Hall rack model step: readable layout"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Main deploy pipeline: restore lost deploy script"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Main deploy pipeline: restore lost deploy script"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Callouts during rotation match settled layout"
+      ],
+      "rowVerdicts": {
+        "Callouts during rotation match settled layout": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Yellow wires render as zigzag sawtooth at grey box"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Plan click opens same panel as left list, abbreviations expanded",
+        "Camera stays above ground, orbit pivot at viewport centre",
+        "Buried routes drawn slightly above floor level"
+      ],
+      "rowVerdicts": {
+        "Buried routes drawn slightly above floor level": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Archive 2026-11-05 sync transcript (Max, Aleksandra)",
+        "Sync 2026-11-05 complaints: fix list for approval page"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Archive 2026-11-05 sync transcript (Max, Aleksandra)",
+        "Sync 2026-11-05 complaints: fix list for approval page"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Sync 2026-11-05 complaints: fix list for approval page"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Substation: reference-based look, clickable with panel",
+        "Abbreviation expansions on every node, sorted"
+      ],
+      "rowVerdicts": {
+        "Substation: reference-based look, clickable with panel": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Screenshots from Max's call video at complaint moments"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Max feedback: what Darafei misses across all calls"
+      ]
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Investigate lost asks: site yard to inputs, floor count",
+        "Reanalyse Max complaints as one 'spaghetti/learning' theme",
+        "Plan Do items: selection, decimals+locale, battery, conflicts on all buttons, redundancy, rack zoom, lag"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Standalone Max simulator repo with holdout eval"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Consolidate lane branches into one branch"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Plan-click: review page for 12 product questions"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Review pages exist only with server-saved answers"
+      ],
+      "rowVerdicts": {
+        "Review pages exist only with server-saved answers": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Review pages exist only with server-saved answers"
+      ],
+      "rowVerdicts": {
+        "Review pages exist only with server-saved answers": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Review pages exist only with server-saved answers"
+      ],
+      "rowVerdicts": {
+        "Review pages exist only with server-saved answers": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Max simulator: formal, polished write-up with full names",
+        "AGENTS: identify speaker, enrich stakeholder model",
+        "Abbreviations: hover tooltip via abbr element",
+        "Rack close-up: front-from-above angle allowed",
+        "Delivered page: fix broken screenshot images"
+      ],
+      "rowVerdicts": {
+        "Max simulator: formal, polished write-up with full names": {
+          "status": "fail"
+        },
+        "AGENTS: identify speaker, enrich stakeholder model": {
+          "status": "pass"
+        },
+        "Rack close-up: front-from-above angle allowed": {
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Stop eval browser software-GL kills on XMOVA"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Generated UX transition graph with dead ends and wrong returns"
+      ]
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Use grid: row opens explainer panel, small inline toggle"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Measure XMOVA render performance on mccatie M1 GPU"
+      ]
+    },
+    {
+      "classification": "linked",
+      "rows": [
+        "Repo cleanup round 2: rigorous keep/remove rule"
+      ]
+    },
+    {
+      "classification": "merged",
+      "rows": []
+    },
+    {
+      "classification": "not-a-requirement",
+      "rows": []
+    }
+  ],
+  "auditors": [
+    {
+      "workerId": "AuditUpsRatingsR99",
+      "rows": [
+        "Merge overlapping UPS decisions into one UPS decision",
+        "UPS options show sourced physical ratings"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "QaPower2",
+      "rows": [
+        "Power section of decisions list: consistent rows, dividers, icons"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "QaPower3",
+      "rows": [
+        "Power section of decisions list: consistent rows, dividers, icons"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "QaPower4",
+      "rows": [
+        "Power section of decisions list: consistent rows, dividers, icons"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "QaFinance5",
+      "rows": [
+        "Finance: seven business models, retail vs wholesale rates"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "QaFinance5-2",
+      "rows": [
+        "Finance: seven business models, retail vs wholesale rates"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "AuditCoolingR126b",
+      "rows": [
+        "Cooling group: renamed, hall cooling rows moved, sectioned"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "AuditCoolingR126c",
+      "rows": [
+        "Cooling group: renamed, hall cooling rows moved, sectioned"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "ReauditRackPanel",
+      "rows": [
+        "Rack panel: readable reasons, Generic kW after recovery, unclipped tiles"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "RedundancyAudit-2",
+      "rows": [
+        "Redundancy level moved above Power source groups"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "RackTileAudit",
+      "rows": [
+        "Rack tiles: lifetime cost metric, TFLOPS/kW, readable numbers"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "AuditBatch0256",
+      "rows": [
+        "Power switches restyled to MM skin"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "LandHeatLabels-2",
+      "rows": [
+        "Adaptive layout: heat pipes reach heat plant"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "AuditInlineSwitches",
+      "rows": [
+        "Power yes/no sources as inline switches"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "AuditRedundancyOrder",
+      "rows": [
+        "Redundancy level moved above Power source groups"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "AuditRackPanel",
+      "rows": [
+        "Rack panel: readable reasons, Generic kW after recovery, unclipped tiles"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "AuditTranscriptFile",
+      "rows": [
+        "Archive 2026-11-05 sync transcript (Max, Aleksandra)",
+        "Sync 2026-11-05 complaints: fix list for approval page"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "AuditMaxTheme",
+      "rows": [
+        "Investigate lost asks: site yard to inputs, floor count",
+        "Reanalyse Max complaints as one 'spaghetti/learning' theme",
+        "Plan Do items: selection, decimals+locale, battery, conflicts on all buttons, redundancy, rack zoom, lag"
+      ],
+      "agent": "qa-auditor"
+    },
+    {
+      "workerId": "AuditMacPerf-3",
+      "rows": [
+        "Measure XMOVA render performance on mccatie M1 GPU"
+      ],
+      "agent": "qa-auditor"
+    }
+  ]
+}

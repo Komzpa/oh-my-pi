@@ -7,6 +7,8 @@ import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample, TSchema } from "@oh-my-pi/pi-ai";
 import { renderToolInventory } from "@oh-my-pi/pi-ai/dialect";
+import { needsNormalProseSpacing } from "@oh-my-pi/pi-catalog/compat/prose-spacing";
+import type { CatalogPolicyInputs } from "@oh-my-pi/pi-catalog/types";
 import type { DelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
 import {
 	$env,
@@ -25,6 +27,7 @@ import type { SkillsSettings } from "./extensibility/settings";
 import type { Personality } from "./session/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { expandAtImports } from "./discovery/at-imports";
+import { loadProjectAgentsMd } from "./discovery/project-agents-md";
 import type { EvalPreludeDefinition } from "./eval/preludes";
 import { SkillDescriptionCatalog } from "./extensibility/skill-descriptions";
 import { loadSkills, type Skill } from "./extensibility/skills";
@@ -32,10 +35,12 @@ import { InternalUrlRouter } from "./internal-urls/router";
 import type { SchemeHost } from "./internal-urls/types";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
+import normalProseSpacing from "./prompts/system/normal-prose-spacing.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
+import workspaceContextTemplate from "./prompts/system/workspace-context.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import userAppendPromptTemplate from "./prompts/system/user-append.md" with { type: "text" };
 import type { SystemPromptSource, SystemPromptSources } from "@oh-my-pi/pi-tui/status-line/context-usage";
@@ -330,6 +335,14 @@ export async function resolvePromptInput(input: string | undefined, description:
 	}
 }
 
+export interface ContextFileSnapshot {
+	path: string;
+	content: string;
+	depth?: number;
+	/** Original source files before @-import expansion. */
+	sources?: Array<{ path: string; content: string }>;
+}
+
 export interface LoadContextFilesOptions {
 	/** Working directory to start walking up from. Default: getProjectDir() */
 	cwd?: string;
@@ -351,9 +364,7 @@ export interface LoadContextFilesOptions {
  *
  * @internal Exported for testing.
  */
-export function dedupeContainedContextFiles(
-	contextFiles: Array<{ path: string; content: string; depth?: number }>,
-): Array<{ path: string; content: string; depth?: number }> {
+export function dedupeContainedContextFiles(contextFiles: ContextFileSnapshot[]): ContextFileSnapshot[] {
 	// Sort by depth descending: higher depth (farther from cwd, less
 	// authoritative) first, lower depth (closer to cwd, more authoritative)
 	// last. Stable sort preserves caller order among equal-depth files.
@@ -372,9 +383,9 @@ export function dedupeContainedContextFiles(
 	);
 }
 
-/** Drop context files named `AGENTS.md` (any case). Task subagents never receive them. */
+/** Drop context files named `AGENTS.md` (any case). Used by the strip subagent policy. */
 export function withoutAgentsMd<T extends { path: string }>(files: T[]): T[] {
-	return files.filter(file => path.basename(file.path).toLowerCase() !== "agents.md");
+	return files.filter(file => !["agents.md", "agents.override.md"].includes(path.basename(file.path).toLowerCase()));
 }
 
 /**
@@ -382,9 +393,7 @@ export function withoutAgentsMd<T extends { path: string }>(files: T[]): T[] {
  * Returns {path, content, depth} entries for all discovered context files.
  * Files are sorted by depth (descending) so files closer to cwd appear last/more prominent.
  */
-export async function loadProjectContextFiles(
-	options: LoadContextFilesOptions = {},
-): Promise<Array<{ path: string; content: string; depth?: number }>> {
+export async function loadProjectContextFiles(options: LoadContextFilesOptions = {}): Promise<ContextFileSnapshot[]> {
 	const resolvedCwd = options.cwd ?? getProjectDir();
 
 	const result = await loadCapability(contextFileCapability.id, {
@@ -399,9 +408,12 @@ export async function loadProjectContextFiles(
 	const files = await Promise.all(
 		result.items.map(async item => {
 			const contextFile = item as ContextFile;
+			const loadedFiles = new Map<string, string>([[contextFile.path, contextFile.content]]);
+			const content = await expandAtImports(contextFile.content, contextFile.path, { loadedFiles });
 			return {
 				path: contextFile.path,
-				content: await expandAtImports(contextFile.content, contextFile.path),
+				content,
+				sources: [...loadedFiles].map(([path, content]) => ({ path, content })),
 				depth: contextFile.depth,
 			};
 		}),
@@ -441,6 +453,8 @@ export async function loadSystemPromptFiles(options: LoadContextFilesOptions = {
 export const DEFAULT_SYSTEM_PROMPT_TOOL_NAMES = ["read", "bash", "edit", "write"] as const;
 
 export interface SystemPromptToolMetadata {
+	/** Tool-owned project catalog, kept outside native schemas and agent policy. */
+	projectInstructions?: string;
 	label: string;
 	description: string;
 	/** Tool name the model sees on the provider wire. Defaults to the internal tool name. */
@@ -508,6 +522,9 @@ export function projectSystemPromptToolMetadata(
 		}
 		if ((override?.readsSkillUris ?? toolReadsSkillUris(tool)) === true) metadataEntry.readsSkillUris = true;
 
+		if ("projectInstructions" in tool && typeof tool.projectInstructions === "string") {
+			metadataEntry.projectInstructions = tool.projectInstructions;
+		}
 		metadata.set(name, metadataEntry);
 	};
 
@@ -524,6 +541,8 @@ export function projectSystemPromptToolMetadata(
 }
 
 export interface BuildSystemPromptOptions {
+	/** Stable task-agent role, before project context. */
+	agentRolePrompt?: string;
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
 	/** Already-loaded custom system prompt text; bypasses path resolution. */
@@ -560,11 +579,14 @@ export interface BuildSystemPromptOptions {
 	/** Additional workspace directories beyond cwd (multi-root), absolute. Injected into the project prompt. */
 	additionalWorkspaceRoots?: string[];
 	/** Pre-loaded context files (skips discovery if provided). */
-	contextFiles?: Array<{ path: string; content: string; depth?: number }>;
+	contextFiles?: ContextFileSnapshot[];
+	onContextFile?: (file: ContextFileSnapshot) => Promise<void>;
 	/** Load no context files beyond `contextFiles`: none for additional workspace roots, no nested AGENTS.md list. */
 	noContextFiles?: boolean;
 	/** Drop every context file named `AGENTS.md`, including ones discovered for additional workspace roots. */
 	excludeAgentsMd?: boolean;
+	/** Restrict context to the worker repository chain. */
+	projectAgentsMd?: boolean;
 	/** Skills provided directly to system prompt construction. */
 	skills?: readonly Skill[];
 	/** Session-scoped description snapshot; background cache writes apply only to the next session. */
@@ -587,6 +609,8 @@ export interface BuildSystemPromptOptions {
 	scoutAvailable?: boolean;
 	/** Active model's delegation appetite (catalog `delegation-bias` axis); selects the Delegation section's wording. Default: `balanced`. */
 	delegationBias?: DelegationBias;
+	/** Resolved request model; independent of whether the model identifier is displayed. */
+	resolvedModel?: CatalogPolicyInputs;
 
 	/** Rules with alwaysApply=true — their full content is injected into the prompt. */
 	alwaysApplyRules?: AlwaysApplyRule[];
@@ -649,10 +673,20 @@ export interface BuildSystemPromptOptions {
 	subagent?: boolean;
 }
 
+export interface PromptLayerIndex {
+	global: number;
+	agent: number;
+	project: number;
+}
+
 /** Result of building provider-facing system prompt messages. */
 export interface BuildSystemPromptResult {
 	/** Ordered system prompt blocks. Providers should preserve entries as distinct messages/blocks. */
 	systemPrompt: string[];
+	/** End offsets in systemPrompt.join("\n\n"); dynamic context starts at project. */
+	layers?: PromptLayerIndex;
+	/** Mutable workspace snapshot for the first conversation turn. */
+	conversationContext?: string;
 	/** Context files and skills located in `systemPrompt`; absent for prompts not built from templates. */
 	sources?: SystemPromptSources;
 	/**
@@ -703,6 +737,31 @@ function trackedSources(
 }
 
 /**
+ * {@link trackedSources} for a render that {@link splitBundledPrompt} cut into `blocks`: each
+ * tracked range is rebased onto the block that contains it; a range the split cut through is dropped.
+ */
+function splitTrackedSources(
+	rendered: prompt.TrackedRender,
+	blocks: readonly string[],
+	identities: readonly SourceIdentity[],
+): SystemPromptSource[] {
+	let searchFrom = 0;
+	const starts = blocks.map(block => {
+		const start = rendered.text.indexOf(block, searchFrom);
+		searchFrom = start < 0 ? searchFrom : start + block.length;
+		return start;
+	});
+	return trackedSources(rendered, 0, identities).flatMap(source => {
+		const block = starts.findIndex(
+			(start, index) => start >= 0 && source.start >= start && source.end <= start + blocks[index]!.length,
+		);
+		if (block < 0) return [];
+		const offset = starts[block]!;
+		return [{ ...source, block, start: source.start - offset, end: source.end - offset }];
+	});
+}
+
+/**
  * Join generated append blocks (memory, auto-learn, tool-command routes, MCP server
  * instructions) with the user's append prompt. Keep the user text in its own
  * section so it is not misclassified as MCP server-controlled instructions.
@@ -716,6 +775,21 @@ export function composeAppendPrompt(appendParts: readonly string[], appendSystem
 		return appendSystemPrompt;
 	}
 	return renderUserAppend({ generatedAppend: generated, userAppend: appendSystemPrompt });
+}
+
+/** Split the canonical bundled prompt without making its wording own cache-layer policy. */
+function splitBundledPrompt(rendered: string): string[] {
+	const boundary = /\n(?=[§⁂] Runtime(?:\n|$))/.exec(rendered)?.index;
+	if (boundary === undefined || boundary <= 0) return [rendered.trim()];
+	return [rendered.slice(0, boundary).trim(), rendered.slice(boundary).trim()].filter(Boolean);
+}
+
+/** Project-scoped skills and rules remain sourced from the canonical bundled template. */
+function extractSkillsAndRules(rendered: string): string {
+	const start = rendered.indexOf("# Skills & Rules");
+	if (start < 0) return "";
+	const end = rendered.indexOf("\n# Internal URLs", start);
+	return rendered.slice(start, end < 0 ? undefined : end).trim();
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -739,6 +813,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		contextFiles: providedContextFiles,
 		noContextFiles = false,
 		excludeAgentsMd = false,
+		projectAgentsMd = false,
 		skills: providedSkills,
 		rules,
 		alwaysApplyRules,
@@ -884,6 +959,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		? Promise.resolve(null)
 		: logger.time("loadSystemPromptFiles", loadSystemPromptFiles, { cwd: resolvedCwd });
 	const contextFilesPromise = (async () => {
+		if (projectAgentsMd) return noContextFiles ? [] : loadProjectAgentsMd(resolvedCwd);
 		const primary = providedContextFiles
 			? providedContextFiles
 			: await logger.time("loadProjectContextFiles", loadProjectContextFiles, { cwd: resolvedCwd });
@@ -973,9 +1049,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		withDeadline("loadPersonalityOverride", personalityPromise, bundledPersonality),
 	]);
 	clearTimeout(deadlineTimer);
-	const agentsMdFiles = noContextFiles
-		? []
-		: Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
+	const agentsMdFiles =
+		noContextFiles || projectAgentsMd
+			? []
+			: Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
 
 	if (timedOut.length > 0) {
 		logger.warn("System prompt preparation steps timed out; using minimal fallback for those steps", {
@@ -1079,6 +1156,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		resolvedCustomPrompt,
 		resolvedAppendPrompt,
 	]);
+	for (const file of contextFiles) await options.onContextFile?.(file);
 	const contextPromptSources = contextFiles.map(file => file.content);
 	const promptSources = [
 		effectiveSystemPromptCustomization,
@@ -1110,6 +1188,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		: (resolvedSystemPromptTemplate ?? systemPromptTemplate);
 	const environment = getEnvironmentInfo();
 	const data = {
+		toolProjectInstructions: [...(tools?.values() ?? [])].map(tool => tool.projectInstructions).filter(Boolean),
 		systemPromptCustomization: effectiveSystemPromptCustomization,
 		customPrompt: resolvedCustomPrompt,
 		appendPrompt: resolvedAppendPrompt ?? "",
@@ -1164,7 +1243,13 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	};
 	let rendered: prompt.TrackedRender;
 	try {
-		rendered = prompt.renderTracked(selectedTemplate, data, sourceItems);
+		rendered = prompt.renderTracked(
+			selectedTemplate,
+			resolvedCustomPrompt || resolvedSystemPromptTemplate
+				? data
+				: { ...data, appendPrompt: "", skills: [], rules: [], alwaysApplyRules: [] },
+			sourceItems,
+		);
 	} catch (error) {
 		if (resolvedSystemPromptTemplate === undefined) throw error;
 		if (options.systemPromptTemplate !== undefined) {
@@ -1174,22 +1259,51 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			error: String(error),
 		});
 		resolvedSystemPromptTemplate = undefined;
-		rendered = prompt.renderTracked(systemPromptTemplate, data, sourceItems);
+		rendered = prompt.renderTracked(
+			systemPromptTemplate,
+			{
+				...data,
+				appendPrompt: "",
+				skills: [],
+				rules: [],
+				alwaysApplyRules: [],
+			},
+			sourceItems,
+		);
 	}
-	const systemPrompt = [rendered.text];
-	const sources = trackedSources(rendered, 0, sourceIdentities);
+	const bundled = !resolvedCustomPrompt && !resolvedSystemPromptTemplate;
+	const systemPrompt = bundled ? splitBundledPrompt(rendered.text) : [rendered.text];
+	const globalEnd = bundled ? systemPrompt[0].length : 0;
+	const sources = splitTrackedSources(rendered, systemPrompt, sourceIdentities);
 	for (const prelude of evalPreludes) {
 		const guidance = prelude.guidance?.trim();
 		if (guidance) systemPrompt.push(guidance);
 	}
-	// Working-directory content (context files with their paths, workspace
-	// tree/roots, active repo) and session append text form one trailing
+	if (options.agentRolePrompt?.trim()) systemPrompt.push(options.agentRolePrompt.trim());
+	const agentEnd = systemPrompt.join("\n\n").length;
+	// Project instructions, skills, rules, cwd and repo facts form one trailing
 	// `<project-context>` block after every static block, so sessions in
 	// different directories share the static prefix and the Anthropic head
 	// cache breakpoint lands right before this block.
 	const projectPrompt = trimTracked(
-		prompt.renderTracked(projectPromptTemplate, { ...data, activeRepoContext: activeRepoContextPrompt }, sourceItems),
+		prompt.renderTracked(
+			projectPromptTemplate,
+			{
+				...data,
+				...(bundled
+					? {
+							appendPrompt: "",
+							skillsAndRules: extractSkillsAndRules(
+								prompt.render(systemPromptTemplate, { ...data, appendPrompt: "" }),
+							),
+						}
+					: { skills: [], rules: [], alwaysApplyRules: [] }),
+				activeRepoContext: activeRepoContextPrompt,
+			},
+			sourceItems,
+		),
 	);
+	if (needsNormalProseSpacing(options.resolvedModel)) systemPrompt.push(normalProseSpacing.trim());
 	if (projectPrompt.text) {
 		sources.push(...trackedSources(projectPrompt, systemPrompt.length, sourceIdentities));
 		systemPrompt.push(projectPrompt.text);
@@ -1202,5 +1316,11 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		!resolvedCustomPrompt && toolCommandDocs.length > 0 && rendered.text.includes(toolCommandDocs)
 			? mountedCommands.map(mounted => mounted.name)
 			: undefined;
-	return { systemPrompt, toolCommandCatalogNames, sources: { blocks: systemPrompt.slice(), sources } };
+	return {
+		systemPrompt,
+		toolCommandCatalogNames,
+		layers: bundled ? { global: globalEnd, agent: agentEnd, project: systemPrompt.join("\n\n").length } : undefined,
+		conversationContext: prompt.render(workspaceContextTemplate, data).trim() || undefined,
+		sources: { blocks: systemPrompt.slice(), sources },
+	};
 }

@@ -25,10 +25,9 @@ import { createInteractiveModeContext } from "./helpers/interactive-mode-context
  * reconstructing every historical component on the JS thread. The notice must be
  * appended to the existing transcript instead.
  *
- * Drives the real AgentSession (whose idle `nextTurn` arm appends silently, with
- * no message_start/message_end), ExtensionUiController, EventController and
- * UiHelpers. `rebuildChatFromMessages` is spied rather than faked: the append
- * path must not reach it at all.
+ * Drives the real AgentSession, ExtensionUiController, EventController and
+ * UiHelpers. The idle append's lifecycle events own the paint;
+ * `rebuildChatFromMessages` is spied rather than faked and must not run.
  */
 const MARKER = "ISSUE_12183_IDLE_NOTICE";
 
@@ -150,8 +149,8 @@ async function createHarness() {
 				{ customType: "example.notice", content: MARKER, display, attribution: "agent" },
 				{ deliverAs: "nextTurn", triggerTurn: false },
 			);
-			// The controller's `.then(applyCustomMessageDisplay)` was registered on this
-			// promise before this continuation, so it has run once the await resumes.
+			// AgentSession dispatches the append's lifecycle events before its promise
+			// resolves, so the event controller has handled them after this await.
 			await sent;
 		},
 		rendered: () => Bun.stripANSI(ctx.chatContainer.render(120).join("\n")),

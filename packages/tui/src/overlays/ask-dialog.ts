@@ -768,7 +768,7 @@ export class AskDialogComponent implements Component {
 		const hints = [
 			question?.multi
 				? `${formatKeyHint("space")} toggle · ${enter} ${enterAction}`
-				: `${enter} select · ${formatKeyHint("n")} note`,
+				: `${enter} select · ${formatKeyHint("n")} ${this.#highlightedRowIsOther() ? "edit" : "note"}`,
 			`${upDown} move`,
 		];
 		if (this.#questions.length > 1) hints.push(`${formatKeyHints(["tab", "left", "right"])} question`);
@@ -918,10 +918,13 @@ export class AskDialogComponent implements Component {
 	#describeActions(ring: boolean): NativeNode {
 		const cancel = actionButton("Cancel", "cancel", { title: "Cancel without answering" });
 		const lead: NativeNode[] = this.#countdown ? [this.#describeTimer(this.#countdown, ring)] : [];
-		const note = actionButton("Note", "note", {
-			keys: "n",
-			title: "Add a note to the highlighted answer  n",
-		});
+		// On Other, `n` edits the custom answer instead of attaching a note.
+		const note = this.#highlightedRowIsOther()
+			? actionButton("Edit", "note", { keys: "n", title: "Edit the custom answer  n" })
+			: actionButton("Note", "note", {
+					keys: "n",
+					title: "Add a note to the highlighted answer  n",
+				});
 		const submit = actionButton("Submit", "submit", { tone: "accent", title: "Submit the answers" });
 		return actionBar([...lead, null, note, cancel, submit]);
 	}
@@ -1074,12 +1077,17 @@ export class AskDialogComponent implements Component {
 		this.#requestRender();
 	}
 
-	/** `n`: a note on the highlighted row of the open question. */
+	/** `n`: edit the custom answer, or add a note to a predefined option. */
 	#pressNote(): void {
 		this.#countdown?.reset();
 		const active = this.#activeQuestionState();
 		const rowItem = active ? this.#questionRows(active.question)[active.state.cursorIndex] : undefined;
-		if (active && rowItem) void this.#promptForNote(active.question, active.state, rowItem);
+		if (!active || !rowItem) return;
+		if (rowItem.kind === "other") {
+			this.#commitRow(active.question, active.state, rowItem, true);
+			return;
+		}
+		void this.#promptForNote(active.question, active.state, rowItem);
 	}
 
 	/**
@@ -1199,6 +1207,11 @@ export class AskDialogComponent implements Component {
 		this.options.tui?.requestRender();
 	}
 
+	#highlightedRowIsOther(): boolean {
+		const active = this.#activeQuestionState();
+		return active !== undefined && this.#questionRows(active.question)[active.state.cursorIndex]?.kind === "other";
+	}
+
 	#questionRows(question: ExtensionAskDialogQuestion): QuestionRow[] {
 		const display = displayOptionLabels(question);
 		const rows: QuestionRow[] = question.options.map((option, index) => ({
@@ -1293,7 +1306,6 @@ export class AskDialogComponent implements Component {
 				// Submitting an empty value unselects the custom answer.
 				state.customInput = undefined;
 				state.customInputImages = undefined;
-				clearNoteIfRow(state, rowItem.key);
 				return;
 			}
 			state.customInput = input.text;

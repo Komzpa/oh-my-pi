@@ -1,3 +1,4 @@
+import type { InteractiveViewSnapshot } from "../interactive-view";
 /**
  * RPC protocol types for headless operation.
  *
@@ -18,10 +19,14 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
-import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { AgentSession, AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type {
+	AgentSessionDisposeOptions,
+	PromptOptions,
+	RestoredQueuedMessage,
+} from "../../session/agent-session-types";
 import type { WireSessionEvent } from "../../session/loop-end-wire";
 import type { SessionLeaseReport } from "../../session/session-storage";
-import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { FileEntry, SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { UsageLimitState } from "../../session/usage-limit";
@@ -48,17 +53,30 @@ import type { BtwHistoryRecord } from "../../session/btw-history";
  */
 export type RpcMessageUpdates = "full" | "delta";
 
-export type RpcCommand =
+type RpcCommandEnvelope =
 	// Protocol
 	| { id?: string; type: "negotiate_protocol"; protocolVersion: number }
 
 	// Prompting
-	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }
+	| {
+			id?: string;
+			type: "prompt";
+			message: string;
+			images?: ImageContent[];
+			streamingBehavior?: "steer" | "followUp";
+			options?: Omit<PromptOptions, "onPromptAdmitted">;
+	  }
+	| {
+			id?: string;
+			type: "prompt_custom";
+			message: Parameters<AgentSession["promptCustomMessage"]>[0];
+			options?: Omit<NonNullable<Parameters<AgentSession["promptCustomMessage"]>[1]>, "onPromptAdmitted">;
+	  }
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "remove_queued_message"; message: string; queue: "steering" | "followUp" }
 	| { id?: string; type: "promote_queued_message"; message: string }
-	| { id?: string; type: "abort" }
+	| { id?: string; type: "abort"; options?: Parameters<AgentSession["abort"]>[0] }
 	| { id?: string; type: "abort_and_prompt"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort_and_restore_queue" }
 	| { id?: string; type: "abort_and_deliver_queue" }
@@ -67,7 +85,12 @@ export type RpcCommand =
 	| { id?: string; type: "open_session"; sessionDir: string; provider?: string; modelId?: string }
 
 	// State
-	| { id?: string; type: "get_state" }
+	| { id?: string; type: "begin_dispose" }
+	| { id?: string; type: "dispose_session"; options?: AgentSessionDisposeOptions }
+	| { id?: string; type: "checkpoint_session" }
+	| { id?: string; type: "save_draft"; text: string }
+	| { id?: string; type: "consume_draft" }
+	| { id?: string; type: "get_state"; view?: { collapseCompactedHistory?: boolean } }
 	| { id?: string; type: "set_fast_mode"; enabled: boolean }
 	| { id?: string; type: "set_slow_mode"; enabled: boolean }
 	| {
@@ -184,6 +207,8 @@ export type RpcCommand =
 // ============================================================================
 
 export interface RpcSessionState {
+	/** Present only when requested, so streaming state refreshes stay small. */
+	view?: InteractiveViewSnapshot;
 	model?: Model;
 	thinkingLevel: ThinkingLevel | undefined;
 	/** The user's thinking selector: `auto` while auto mode picks the effort. */
@@ -192,6 +217,8 @@ export interface RpcSessionState {
 	thinkingLevels?: ConfiguredThinkingLevel[];
 	isStreaming: boolean;
 	isCompacting: boolean;
+	/** Exact root turn cleanup predicate, distinct from background async jobs. */
+	hasPostPromptWork?: boolean;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	interruptMode: "immediate" | "wait";
@@ -456,6 +483,7 @@ export type RpcResponse =
 
 	// Prompting (async - events follow)
 	| { id?: string; type: "response"; command: "prompt"; success: true; data?: { agentInvoked: boolean } }
+	| { id?: string; type: "response"; command: "prompt_custom"; success: true }
 	| { id?: string; type: "response"; command: "steer"; success: true }
 	| { id?: string; type: "response"; command: "follow_up"; success: true }
 	| {
@@ -481,6 +509,11 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "open_session"; success: true; data: RpcOpenSessionResult }
 
 	// State
+	| { id?: string; type: "response"; command: "begin_dispose"; success: true }
+	| { id?: string; type: "response"; command: "dispose_session"; success: true }
+	| { id?: string; type: "response"; command: "checkpoint_session"; success: true }
+	| { id?: string; type: "response"; command: "save_draft"; success: true }
+	| { id?: string; type: "response"; command: "consume_draft"; success: true; data: { text: string | null } }
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
 	| {
 			id?: string;
@@ -934,14 +967,14 @@ export interface RpcHostToolCancelRequest {
 export interface RpcHostToolUpdate {
 	type: "host_tool_update";
 	id: string;
-	partialResult: AgentToolResult<unknown>;
+	partialResult: Omit<AgentToolResult<unknown>, "harnessNotice">;
 }
 
 /** Sent by the host to complete a pending tool call. */
 export interface RpcHostToolResult {
 	type: "host_tool_result";
 	id: string;
-	result: AgentToolResult<unknown>;
+	result: Omit<AgentToolResult<unknown>, "harnessNotice">;
 	isError?: boolean;
 }
 
@@ -1023,3 +1056,8 @@ export type RpcExtensionUIResponse =
 // ============================================================================
 
 export type RpcCommandType = RpcCommand["type"];
+
+/** Original input remains attached when a frontend transforms its prompt. */
+export type RpcCommand =
+	| (Extract<RpcCommandEnvelope, { type: "prompt" }> & { rawRequirementText?: string })
+	| Exclude<RpcCommandEnvelope, { type: "prompt" }>;

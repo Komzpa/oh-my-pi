@@ -17,3 +17,5 @@ A data-less `type: "result"` finalizes previously submitted sections; it is inva
 The terminal `data` MUST be the full object matching the output schema.
 {{/if}}
 {{/if}}
+
+When the worker continuation gate is enabled, terminal mutation workers also supply `requirements: [{requirement, done, evidence}]` and optionally `blocker: {kind, evidence}`. Evidence is exactly one of `{commit: sha}`, `{path}`, or `{command}`; these are checked against the worker checkout and successful command history. Keep the caller output in `data`.

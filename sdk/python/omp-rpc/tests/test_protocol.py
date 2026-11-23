@@ -638,7 +638,10 @@ class ProtocolParsingTests(unittest.TestCase):
         self.assertEqual(notification.todos[0].content, "Map tools")
         self.assertEqual(notification.todos[0].status, "pending")
 
-    def test_parse_session_state_reads_todo_phases(self) -> None:
+    def test_parse_session_state_accepts_blocked_todo(self) -> None:
+        # Regression: the TS agent added a `blocked` todo status (with a
+        # `blocker` note); resuming a session whose todos were blocked must
+        # not fail state parsing.
         state = parse_session_state(
             {
                 "sessionId": "session-123",
@@ -653,7 +656,8 @@ class ProtocolParsingTests(unittest.TestCase):
                             {
                                 "id": "task-1",
                                 "content": "Open PR",
-                                "status": "in_progress",
+                                "status": "blocked",
+                                "blocker": "waiting on maintainer go-ahead",
                             }
                         ],
                     }
@@ -662,7 +666,8 @@ class ProtocolParsingTests(unittest.TestCase):
         )
 
         task = state.todo_phases[0].tasks[0]
-        self.assertEqual((task.content, task.status), ("Open PR", "in_progress"))
+        self.assertEqual(task.status, "blocked")
+        self.assertEqual(task.blocker, "waiting on maintainer go-ahead")
 
     def test_assistant_text_excludes_thinking_by_default(self) -> None:
         message = {

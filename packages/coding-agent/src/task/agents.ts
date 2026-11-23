@@ -12,6 +12,7 @@ import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
+import qaAuditorMd from "../prompts/agents/qa-auditor.md" with { type: "text" };
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
@@ -41,7 +42,11 @@ function buildAgentContent(def: EmbeddedAgentDef): string {
 	return prompt.render(agentFrontmatterTemplate, { ...def.frontmatter, body });
 }
 
+/** Raw embedded bytes of the bundled qa-auditor profile (source text, with frontmatter). */
+export const BUNDLED_QA_AUDITOR_TEMPLATE = qaAuditorMd;
+
 const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
+	{ fileName: "qa-auditor.md", template: qaAuditorMd },
 	{ fileName: "scout.md", template: scoutMd },
 	{ fileName: "reviewer.md", template: reviewerMd },
 	{ fileName: "security-reviewer.md", template: securityReviewerMd },
@@ -52,7 +57,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			description: "General-purpose subagent with full capabilities for delegated multi-step tasks",
 			spawns: "*",
 			model: "@task",
-			thinkingLevel: AUTO_THINKING,
+			thinkingLevel: Effort.Medium,
 			// No `prewalk` frontmatter: the generic task hand-off (strong model
 			// plans, then hands off to the smol role) is armed by the
 			// `task.prewalk` setting (default off) or per agent via /agents

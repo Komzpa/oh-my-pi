@@ -180,6 +180,9 @@ describe("RPC goal command", () => {
 			setActiveToolsByName: async (names: string[]) => {
 				tools = [...names];
 			},
+			reapplyActiveToolsByName: async (names: string[]) => {
+				tools = [...names];
+			},
 			getTodoPhases: () => [],
 			promptCustomMessage: async () => true,
 			waitForIdle: async () => {},
@@ -279,7 +282,7 @@ describe("RPC goal command", () => {
 		).toBe(true);
 	}, 30_000);
 
-	test("host abort of a continuation turn pauses the goal and starts no further goal turn", async () => {
+	test("host abort of a continuation turn keeps the goal active and starts no further goal turn", async () => {
 		const rpc = await start({ continuation: true, script: "slow" });
 		let agentStarts = 0;
 		const started = Promise.withResolvers<void>();
@@ -301,7 +304,7 @@ describe("RPC goal command", () => {
 			unsubscribe();
 		}
 		expect(agentStarts).toBe(1);
-		expect(state.goal?.goal.status).toBe("paused");
+		expect(state.goal?.goal.status).toBe("active");
 		expect(state.isStreaming).toBe(false);
 		expect(state.isSettled).toBe(true);
 	}, 30_000);
@@ -541,7 +544,6 @@ describe("RpcGoalController continuation gate", () => {
 		let resumed = Promise.withResolvers<void>();
 		resumed.resolve();
 		let threadResumes = 0;
-		const preservedActive: boolean[] = [];
 		const transcript = { id: "t1" };
 		const session = {
 			settings: Settings.isolated({ "goal.continuationModes": ["rpc"] }),
@@ -584,13 +586,15 @@ describe("RpcGoalController continuation gate", () => {
 			setActiveToolsByName: async (names: string[]) => {
 				tools = [...names];
 			},
+			reapplyActiveToolsByName: async (names: string[]) => {
+				tools = [...names];
+			},
 			getTodoPhases: () => [],
 			goalRuntime: {
 				buildContinuationPrompt: () => "continue",
 				clearAccounting: () => {},
 				onThreadResumed: async (options?: { preserveActiveGoal?: boolean }) => {
 					threadResumes++;
-					preservedActive.push(options?.preserveActiveGoal === true);
 					await resumed.promise;
 					return goalState;
 				},
@@ -621,8 +625,6 @@ describe("RpcGoalController continuation gate", () => {
 			goalState: () => goalState,
 			tools: () => tools,
 			threadResumes: () => threadResumes,
-			/** `preserveActiveGoal` of each `onThreadResumed` call, in order. */
-			preservedActive: () => preservedActive,
 			journalGoal: () => {
 				journaledGoal = true;
 			},
@@ -664,6 +666,37 @@ describe("RpcGoalController continuation gate", () => {
 		controller.observe(hostInput);
 		controller.observe(agentEnd);
 		controller.observe(agentEnd);
+		await nextMacrotask();
+		expect(admitted).toEqual(["goal-continuation"]);
+	});
+
+	test("explicit resume re-arms an active goal stopped by host abort", async () => {
+		const admitted: string[] = [];
+		const { controller } = fakeSession(async customType => {
+			admitted.push(customType);
+			return true;
+		});
+		controller.stopForHostAbort();
+		controller.observe(agentEnd);
+		await nextMacrotask();
+		expect(admitted).toEqual([]);
+		await controller.handle({ op: "resume" });
+		await nextMacrotask();
+		expect(admitted).toEqual(["goal-continuation"]);
+	});
+
+	test("resume waits for queued turns but starts when the queue is clear", async () => {
+		const admitted: string[] = [];
+		const { session, controller } = fakeSession(async customType => {
+			admitted.push(customType);
+			return true;
+		});
+		session.queuedMessageCount = 1;
+		await controller.handle({ op: "resume" });
+		await nextMacrotask();
+		expect(admitted).toEqual([]);
+		session.queuedMessageCount = 0;
+		await controller.handle({ op: "resume" });
 		await nextMacrotask();
 		expect(admitted).toEqual(["goal-continuation"]);
 	});
@@ -951,7 +984,7 @@ describe("RpcGoalController continuation gate", () => {
 		expect(f.threadResumes()).toBe(2);
 	});
 
-	test("the startup reattach lets the runtime pause an active goal; an in-process change preserves it", async () => {
+	test("reattaches a goal after startup and in-process session changes", async () => {
 		const f = fakeSession(async () => true);
 		f.journalGoal();
 		await f.controller.reconcile();
@@ -959,7 +992,7 @@ describe("RpcGoalController continuation gate", () => {
 		f.transcript.id = "t2";
 		await f.controller.endSessionChange();
 		await f.controller.settled();
-		expect(f.preservedActive()).toEqual([false, true]);
+		expect(f.threadResumes()).toBe(2);
 	});
 
 	test("a change that detached a continuation turn does not count the next turn as a continuation", async () => {

@@ -2,6 +2,9 @@ import * as path from "node:path";
 import { isCompiledBinary, logger, untilAborted, workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type { Browser, CDPSession } from "puppeteer-core";
+import { ToolResourceScope } from "@oh-my-pi/pi-natives";
+import { toolSessionEnvironment } from "../../exec/session-slice";
+import { workerEnvFromParent } from "../../subprocess/worker-client";
 import { ToolAbortError } from "../tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { findFreeCdpPort, findReusableCdp, gracefulKillTreeOnce, resolveSpawnArgs, waitForCdp } from "./attach";
@@ -18,9 +21,10 @@ import {
 	type UserAgentOverride,
 } from "./launch";
 import { reapOrphanSharedTargets, type SharedTargetScope } from "./orphan-registry";
+import { backgroundBrowserCommand } from "./priority";
 import type { RelayKind } from "./relay/kind";
 import { requestRelayRestart, UPDATE_RELAY_EXTENSION, waitForRelayExtension } from "./relay/probe";
-import { ensureSharedBrowser } from "./shared-daemon";
+import { browserSpawnCommand, ensureSharedBrowser } from "./shared-daemon";
 import type { TernKind } from "./tern/kind";
 import { TernSocketClient } from "./tern/wire";
 import type { UnitLease } from "./unit-lease";
@@ -134,6 +138,7 @@ export function browserKey(kind: BrowserKind): string {
 
 export interface AcquireBrowserOptions {
 	cwd: string;
+	sessionId?: string;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
 	signal?: AbortSignal;
 	/** Ask a relay served by an older omp to restart from the installed one. Default true. */
@@ -142,7 +147,7 @@ export interface AcquireBrowserOptions {
 
 export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOptions): Promise<BrowserHandle> {
 	if (kind.kind === "spawned") kind = { ...kind, args: resolveSpawnArgs(kind.path, kind.args, opts.cwd) };
-	const key = browserKey(kind);
+	const key = `${browserKey(kind)}:${opts.sessionId ?? ""}`;
 	for (;;) {
 		const existing = browsers.get(key);
 		if (existing) {
@@ -198,6 +203,7 @@ export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOpti
 			clearEntry();
 			throw error;
 		}
+		handle.key = key;
 		// The launch may resolve AFTER the caller has already aborted (the outer
 		// `untilAborted` rejects immediately on abort but does not cancel the
 		// inner promise, and `launchHeadlessBrowser` does not accept a signal).
@@ -373,13 +379,19 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 	} else {
 		const port = await findFreeCdpPort();
 		const launchArgs = [...appArgs, `--remote-debugging-port=${port}`];
-		const child = Bun.spawn([exe, ...launchArgs], {
+		const env = await toolSessionEnvironment(opts.sessionId, workerEnvFromParent());
+		const scope = opts.sessionId ? new ToolResourceScope() : undefined;
+		const launch = browserSpawnCommand({ executablePath: exe, args: launchArgs });
+		const command = backgroundBrowserCommand(launch.application, launch.args);
+		const child = Bun.spawn(scope ? await scope.wrapCommandAsync(command, env) : command, {
 			cwd: opts.cwd,
+			env,
 			stdout: "ignore",
 			stderr: "ignore",
 			stdin: "ignore",
 		});
 		child.unref();
+		if (scope) void child.exited.finally(() => scope.close());
 		subprocess = child;
 		pid = child.pid;
 		cdpUrl = `http://127.0.0.1:${port}`;
@@ -537,7 +549,10 @@ async function openSharedHeadlessHandle(
 		// left behind by omp processes that died without teardown — bounds
 		// accumulation without a background timer. Best-effort and detached so a
 		// slow reap never delays the open (issue #10022).
-		void reapOrphanSharedTargets(browser, { projectDir: shared.projectDir, daemonName: shared.daemonName });
+		void reapOrphanSharedTargets(browser, {
+			projectDir: shared.projectDir,
+			daemonName: shared.daemonName,
+		});
 		return {
 			key: browserKey(kind),
 			kind,

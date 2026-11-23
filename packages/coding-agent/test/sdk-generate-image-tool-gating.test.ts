@@ -295,9 +295,13 @@ describe("generate_image tool gating", () => {
 		});
 		sessions.push(session);
 		expect(session.getToolCommandEntries()).toEqual([]);
-		expect(session.getActiveToolNames()).not.toContain("write");
+		// Fork: a read-only roster keeps `write` only as the agent:// reply transport.
+		const expectNoFullWrite = () => {
+			if (session.getActiveToolNames().includes("write")) expect(session.isAgentOnlyWrite).toBe(true);
+		};
+		expectNoFullWrite();
 		await session.setActiveToolsByName(["read"]);
-		expect(session.getActiveToolNames()).not.toContain("write");
+		expectNoFullWrite();
 
 		const rpcTool: AgentTool = {
 			name: "rpc_search",

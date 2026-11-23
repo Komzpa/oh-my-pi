@@ -97,6 +97,8 @@ interface AnthropicThreadAnchor {
 	fingerprint: ThreadFingerprint;
 	/** When the response was stored (`Date.now()`). */
 	storedAt: number;
+	/** Create breakpoints retained by the server, excluding its last message. */
+	retainedBreakpoints: number;
 }
 
 /**
@@ -229,7 +231,14 @@ export class AnthropicThreadTurn {
 			if (this.#chain.anchor === anchor) this.#chain.anchor = undefined;
 			const body: MessageCreateParamsStreaming = {
 				...params,
-				messages: continueBreakpoints(params.messages.slice(anchor.messages.length)),
+				messages: continueBreakpoints(
+					params.messages.slice(anchor.messages.length),
+					// A top-level `cache_control` counts as one breakpoint too.
+					4 -
+						anchor.retainedBreakpoints -
+						(topLevelCacheControl(params) ? 1 : 0) -
+						nestedBreakpoints(params.messages.slice(anchor.messages.length)),
+				),
 				thread: { type: "continue", previous_message_id: anchor.messageId },
 			};
 			if (!this.#resendSystemAndTools) {
@@ -306,6 +315,10 @@ export class AnthropicThreadTurn {
 			messages: [...planned.params.messages, stored.message],
 			fingerprint: planned.fingerprint,
 			storedAt: now,
+			retainedBreakpoints:
+				planned.request.kind === "continue"
+					? (this.#claimed?.retainedBreakpoints ?? 0)
+					: countHeadBreakpoints(planned.params),
 		};
 	}
 
@@ -414,17 +427,71 @@ function isCacheable(block: ContentBlockParam): block is CacheableBlock {
 }
 
 /**
+ * Count breakpoints nested inside appended blocks (for example an inline tool
+ * definition a payload hook added). They count against the limit and the
+ * continue keeps them as they are.
+ */
+function nestedBreakpoints(appended: MessageParam[]): number {
+	const walk = (value: unknown): number => {
+		if (Array.isArray(value)) return value.reduce((n: number, item) => n + walk(item), 0);
+		if (!value || typeof value !== "object") return 0;
+		let n = 0;
+		for (const [key, child] of Object.entries(value)) {
+			if (key === "cache_control") n += child != null ? 1 : 0;
+			else n += walk(child);
+		}
+		return n;
+	};
+	let count = 0;
+	for (const message of appended) {
+		if (typeof message.content === "string") continue;
+		for (const block of message.content) {
+			for (const [key, child] of Object.entries(block)) {
+				if (key !== "cache_control") count += walk(child);
+			}
+		}
+	}
+	return count;
+}
+
+/** Whether the request asks for automatic caching with a top-level `cache_control`. */
+function topLevelCacheControl(params: MessageCreateParamsStreaming): boolean {
+	return (params as { cache_control?: unknown }).cache_control != null;
+}
+
+/**
+ * Count the breakpoints on `system` and `tools`. On a thread these are the create
+ * breakpoints that count again on every continue; breakpoints on earlier stored
+ * messages keep working but do not count against a continue's limit of four
+ * (https://platform.claude.com/docs/en/build-with-claude/message-threads).
+ */
+export function countHeadBreakpoints(params: MessageCreateParamsStreaming): number {
+	let count = 0;
+	if (Array.isArray(params.system)) {
+		for (const block of params.system) {
+			if (typeof block !== "string" && block?.cache_control != null) count++;
+		}
+	}
+	if (Array.isArray(params.tools)) {
+		for (const tool of params.tools) {
+			if (tool?.cache_control != null) count++;
+		}
+	}
+	return count;
+}
+
+/**
  * Breakpoints for the messages a continue appends. Prompt caching placed the
  * request's breakpoints for a full upload, but on a continue the trailing one
  * reaches the previous request's cache entry only when the stored response
  * plus the appended blocks fit its ~20-block lookback; a turn of parallel tool
  * calls does not, and would rewrite the whole conversation. This keeps the
  * newest breakpoint, which writes the turn, adds one on the first appended
- * block, which reads up to the previous request, and drops the rest: with the
- * create's system and tools breakpoints that stays within the four a request
+ * block, which reads up to the previous request, only when the create's
+ * retained breakpoints leave room for both. This stays within the four a request
  * may count. Messages without a breakpoint (caching off) pass through.
  */
-function continueBreakpoints(appended: MessageParam[]): MessageParam[] {
+function continueBreakpoints(appended: MessageParam[], budget: number): MessageParam[] {
 	let template: CacheControlEphemeral | undefined;
 	let newest: [number, number] | undefined;
 	let first: [number, number] | undefined;
@@ -443,9 +510,10 @@ function continueBreakpoints(appended: MessageParam[]): MessageParam[] {
 	}
 	if (!template || !first) return appended;
 	const marked = (m: number, b: number) =>
-		(m === first[0] && b === first[1]) || (newest !== undefined && m === newest[0] && b === newest[1]);
+		(budget > 1 && m === first[0] && b === first[1]) ||
+		(budget > 0 && newest !== undefined && m === newest[0] && b === newest[1]);
 	return appended.map((message, m) => {
-		if (m !== first[0] && typeof message.content === "string") return message;
+		if ((budget < 2 || m !== first[0]) && typeof message.content === "string") return message;
 		const content: ContentBlockParam[] =
 			typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
 		let changed = typeof message.content === "string";

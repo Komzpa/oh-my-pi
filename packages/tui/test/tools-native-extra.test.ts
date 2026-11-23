@@ -33,13 +33,14 @@ describe("native todo", () => {
 						{ content: "write parser", status: "completed" },
 						{ content: "lex", status: "in_progress" },
 						{ content: "old idea", status: "abandoned" },
+						{ content: "deploy", status: "blocked", blocker: "no creds" },
 						{ content: "ship it", status: "pending" },
 					],
 				},
 			],
 		};
 		const view = todoToolRenderer.describeResult({ content: [], details }, opts);
-		expect(view?.tool).toMatchObject({ title: "Todo", target: "3/5", targetKind: "text" });
+		expect(view?.tool).toMatchObject({ title: "Todo", target: "3/6", targetKind: "text" });
 		expect(view?.body).toHaveLength(1);
 		const checklist = view?.body?.[0] as NativeNode;
 		expect(checklist.k).toBe("checklist");
@@ -53,6 +54,7 @@ describe("native todo", () => {
 			["write parser", "done", undefined],
 			["lex", "active", undefined],
 			["old idea", "dropped", undefined],
+			["deploy", "blocked", "no creds"],
 			["ship it", "pending", undefined],
 		]);
 	});
@@ -78,14 +80,14 @@ function progress(id: string, extra: Partial<AgentProgress> = {}): AgentProgress
 }
 
 describe("native task", () => {
-	it("renders one agent node per subagent, no cards, with the assignment prefix stripped", () => {
+	it("renders one agent node per subagent, with the task summary passed through", () => {
 		const details: TaskToolDetails = {
 			projectAgentsDir: null,
 			results: [],
 			totalDurationMs: 0,
 			progress: [
 				progress("Alpha", {
-					task: "Complete assignment thoroughly:\n\n# Target\nFix the lexer",
+					task: "# Target\nFix the lexer",
 					currentTool: "read",
 					// `lastIntent` is an earlier call's; the running call carries its own.
 					lastIntent: "Searching the lexer",

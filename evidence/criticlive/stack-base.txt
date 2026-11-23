@@ -1,0 +1,3 @@
+CONFLICT #16530 upstream/task-eval-tools-builtin-names (60bbd6e056) after 7 clean PRs; last applied: #16541
+  packages/coding-agent/src/task/index.ts
+  find the earlier PR touching these files: git log --oneline <upstream>..<each earlier head> -- <file>

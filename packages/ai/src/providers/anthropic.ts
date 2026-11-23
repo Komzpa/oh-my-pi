@@ -1,4 +1,11 @@
 import {
+	recordThinkingPrefixDispatch,
+	snapshotThinkingPrefix,
+	thinkingPrefixDiagnostic,
+	type ThinkingPrefixDiagnostic,
+	type PrefixSnapshot,
+} from "./thinking-prefix-diagnostics";
+import {
 	anthropicApiVersionAcceptsSamplingParams,
 	isAnthropicSigningProxyUrl,
 	isOfficialAnthropicApiUrl,
@@ -74,6 +81,7 @@ import {
 	resolveCacheRetention,
 } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
+import { isLegacySubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import {
 	clearStreamingPartialJson,
 	copyPerCallContextMessage,
@@ -203,6 +211,7 @@ import {
 import {
 	type AnthropicThreadChains,
 	AnthropicThreadTurn,
+	countHeadBreakpoints,
 	anthropicThreadChain,
 	wantsAnthropicThreads,
 } from "./anthropic-threads";
@@ -1701,6 +1710,8 @@ export function isInvalidThinkingSignatureError(message: string): boolean {
 	return INVALID_THINKING_SIGNATURE_PATTERN.test(message) || MISSING_THINKING_SIGNATURE_PATTERN.test(message);
 }
 
+const prefixBeforeHooks = new WeakMap<object, PrefixSnapshot>();
+
 const INPUT_TRANSFORMATION_PATH_PATTERN = /^messages\.(\d+)\.content\.(\d+)$/;
 const PREFIX_BINDING_ERROR_PATH_PATTERN = /messages\.(\d+)\.content\.(\d+)/;
 
@@ -1819,12 +1830,18 @@ function reportedDropKey(params: MessageCreateParamsStreaming, path: string | un
  * every path at debug. One prefix change can drop hundreds of blocks in a
  * single request, which would otherwise flood the log one line per block.
  */
-export function logDroppedThinking(provider: string, model: string, paths: Array<string | undefined>): void {
+export function logDroppedThinking(
+	provider: string,
+	model: string,
+	paths: Array<string | undefined>,
+	diagnostic?: ThinkingPrefixDiagnostic,
+): void {
 	if (paths.length === 0) return;
 	logger.warn(`${provider}: dropped thinking block after conversation prefix changed`, {
 		model,
 		count: paths.length,
 		path: paths[0],
+		prefixDiagnostic: diagnostic ?? { baseline: "unavailable", comparison: "unavailable", stage: "unknown" },
 	});
 	if (paths.length > 1) logger.debug(`${provider}: dropped thinking block paths`, { model, paths });
 }
@@ -1874,7 +1891,7 @@ function applyReportedInputTransformations(
 		}
 		dropped.push(transformation.path);
 	}
-	logDroppedThinking("anthropic", output.model, dropped);
+	logDroppedThinking("anthropic", output.model, dropped, thinkingPrefixDiagnostic(params));
 	if (repeated > 0) {
 		logger.debug("anthropic: API re-dropped previously reported thinking blocks", {
 			model: output.model,
@@ -2390,6 +2407,7 @@ const streamAnthropicOnce = (
 				if (dropFastMode) {
 					dropAnthropicFastMode(nextParams);
 				}
+				const beforePayloadHook = options?.onPayload ? snapshotThinkingPrefix(nextParams) : undefined;
 				// Snapshot the encoder's output before the caller's hook runs, so
 				// the empty-request diagnosis below can name which side emptied the
 				// conversation. `Array.isArray` (not `?.length ?? 0`) states the
@@ -2422,6 +2440,7 @@ const streamAnthropicOnce = (
 					];
 				}
 				nextParams = toWellFormedDeep(nextParams) as typeof nextParams;
+				if (beforePayloadHook) prefixBeforeHooks.set(nextParams, beforePayloadHook);
 				if (transport) {
 					const preparedRequest = await transport.prepareRequest(nextParams, requestExtraBetas);
 					transportPayload = preparedRequest.payload;
@@ -2787,6 +2806,7 @@ const streamAnthropicOnce = (
 					maxRetries: 0,
 					...(requestHeaders ? { headers: requestHeaders } : {}),
 				};
+				recordThinkingPrefixDispatch(params, options, `${baseUrl}:${model.id}`, prefixBeforeHooks.get(params));
 				if (options?.prewarm) {
 					// The body the real request would send, under the same client, auth and
 					// headers, so it lands on the same cache key; only the output cap and
@@ -3940,6 +3960,9 @@ const streamAnthropicOnce = (
 			});
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
+			output.errorType = result.errorType;
+			output.errorCode = result.errorCode;
+			output.errorResetAt = result.errorResetAt;
 			output.errorId = result.id;
 			output.errorMessage = transport ? result.message : maybeAddReplayUnsignedThinkingHint(model, result.message);
 			output.duration = performance.now() - startTime;
@@ -4478,21 +4501,6 @@ function isToolControlMessage(message: MessageParam): boolean {
 const ANTHROPIC_MAX_BREAKPOINTS = 4;
 const ANTHROPIC_DECIMATION_INTERVAL = 15;
 
-function countHeadBreakpoints(params: MessageCreateParamsStreaming): number {
-	let count = 0;
-	if (Array.isArray(params.system)) {
-		for (const block of params.system) {
-			if (typeof block !== "string" && block?.cache_control != null) count++;
-		}
-	}
-	if (Array.isArray(params.tools)) {
-		for (const tool of params.tools) {
-			if (tool?.cache_control != null) count++;
-		}
-	}
-	return count;
-}
-
 function applyCacheControlToMessage(message: MessageParam, cacheControl: AnthropicCacheControl): boolean {
 	if (typeof message.content === "string") {
 		message.content = [
@@ -4683,7 +4691,7 @@ function volatileSystemSuffixStart(systemBlocks: readonly AnthropicSystemBlock[]
  * there is no stable boundary and the breakpoint stays on the array tail.
  *
  * Anthropic allows at most 4 cache breakpoints per request. At most one is
- * spent on tools and one on system here, leaving the remaining budget for
+ * spent on tools and up to two on system here, leaving the remaining budget for
  * the message tail and historical decimation checkpoints in `applyPromptCaching`.
  *
  * The tool array is anchored on both API-key and OAuth paths: the tool definitions
@@ -4733,6 +4741,14 @@ function applyHeadCaching(
 		if (anchor && anchor.cache_control == null) {
 			for (const block of systemBlocks) delete block.cache_control;
 			anchor.cache_control = cloneAnthropicCacheControl(cacheControl);
+		}
+		// The layered renderer's final project block is stable within a cwd. Keep
+		// the cross-project head above AND cache the full project prefix before
+		// dynamic conversation context. Message caching counts these anchors and
+		// spends only the remaining portion of Anthropic's four-breakpoint budget.
+		const project = systemBlocks.at(-1);
+		if (project?.text.startsWith("<project-context>")) {
+			project.cache_control = cloneAnthropicCacheControl(cacheControl);
 		}
 	}
 }
@@ -4841,6 +4857,14 @@ const UNKNOWN_MODEL_MAX_OUTPUT_TOKENS = 64_000;
 type AnthropicControlSpec = { toolChanges: AnthropicToolChange[]; effort?: AnthropicOutputEffort };
 
 type AnthropicControlCarrier = object & { [ANTHROPIC_CONTROL]?: AnthropicControlSpec };
+
+function anthropicRetainedMessageCount(messages: readonly Message[]): number {
+	let count = 0;
+	for (const message of messages) {
+		if (!isLegacySubagentElapsedNote(message)) count++;
+	}
+	return count;
+}
 
 /**
  * An assistant message in `context.messages` whose request declared controls.
@@ -5584,7 +5608,7 @@ function buildParams(
 	const requestControls: AnthropicRequestControls | undefined =
 		toolPlan.record || effortPlan.record
 			? {
-					messageIndex: context.messages.length,
+					messageIndex: anthropicRetainedMessageCount(context.messages),
 					...(toolPlan.record && { tools: toolPlan.record }),
 					...(effortPlan.record && { effort: effortPlan.record }),
 				}
@@ -6043,6 +6067,7 @@ function encodeAnthropicMessages(
 	if (!opts?.compactionRequest) {
 		for (let index = transformedMessages.length - 1; index >= 0; index--) {
 			const message = transformedMessages[index];
+			if (isLegacySubagentElapsedNote(message)) continue;
 			if (message.role === "assistant") break;
 			if (
 				message.role === "user" ||

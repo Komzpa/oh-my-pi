@@ -78,7 +78,7 @@ func TestChunkRejections(t *testing.T) {
 			if !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrClosed) {
 				t.Fatalf("err = %v", err)
 			}
-			if _, err := c.GetState(context.Background()); !errors.Is(err, ErrProtocol) {
+			if _, err := c.GetState(context.Background(), GetStateCommand{}); !errors.Is(err, ErrProtocol) {
 				t.Fatalf("call after a fatal error: %v", err)
 			}
 		})

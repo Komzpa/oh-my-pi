@@ -2939,6 +2939,20 @@ async function closeTargetById(
 }
 
 /**
+ * Durable-ownership scope for a browser handle, or undefined when the handle is
+ * not the project-shared broker-owned Chromium (the only browser whose targets
+ * outlive their creating process and thus need cross-process orphan reaping).
+ */
+function sharedScopeOf(browser: BrowserHandle): SharedTargetScope | undefined {
+	if (!("browser" in browser)) return undefined;
+	if (browser.kind.kind !== "headless" || !browser.sharedDaemon) return undefined;
+	return {
+		projectDir: browser.sharedDaemon.projectDir,
+		daemonName: browser.sharedDaemon.name,
+	};
+}
+
+/**
  * Re-check the shared browser after a close it could not confirm, and forget
  * only what the outcome proves. A browser that answers is left alone: the
  * retained record is not retried by this process (`collectOrphanTargets` skips

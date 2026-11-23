@@ -1,0 +1,508 @@
+{
+  "main92": "845384d4bb6167bfed94b2988f1df11f84e1d776",
+  "full": "782feabe08639bc8b0d8202f392eaf833533b6bb",
+  "rows": [
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16643,
+      "branch": "upstream/output-id-collision-chain",
+      "sha": "cae4c3d48209c20243dbc26692c021934e83f9eb",
+      "merge": "c5b27a12a223af19b16815c4b99bbdcb8eef2bbb"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16644,
+      "branch": "upstream/yield-args-stray-closer",
+      "sha": "efb86089a667a035b4ea54057aa0ce7b028525fb",
+      "merge": "64b790ee2305ab74ba2903b11b43c0be216bea82"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16646,
+      "branch": "upstream/xiaomi-token-plan-request-host",
+      "sha": "9426f3deb6eed0851ac7f18839e4106037a35aa9",
+      "merge": "b25eaada9aba6775b397030291ef406a44b1c3d1"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16651,
+      "branch": "upstream/queue-message-behind-child-brief",
+      "sha": "26bccc43146a317466825e137b37ff77cb39055f",
+      "merge": "50a83f63b83504635d61dbec404c3963228c0af3"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16661,
+      "branch": "upstream/tui-stream-sole-waited-worker",
+      "sha": "afdba1a2599b5b0ce2020dc18bcc821615a93cce",
+      "merge": "725347a48b8ccd02e6993357ae9bc4b8bdf1c82f"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16664,
+      "branch": "upstream/task-effort-guidance",
+      "sha": "1f636ff5d867890ea12609d51083494a3c292a97",
+      "merge": "d14af8af0a18918383ae8900749681fdcba5ae9f"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16541,
+      "branch": "upstream/jfind-cancel-initial-scans",
+      "sha": "4bc628573d9c45a400576d00e81a40d9da4f8100",
+      "merge": "6da03d52e9110bbf132e8e211d0d186285414800"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16530,
+      "branch": "upstream/task-eval-tools-builtin-names",
+      "sha": "60bbd6e056beaa1275bda0ac9376b4e956b75668",
+      "merge": "229035f15dbe4d75e72840b7bd1c99ecaf004eb9"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16535,
+      "branch": "upstream/soft-requirement-skip",
+      "sha": "e023924a1020a1d203b77fd67a5f45f3efe1c1d2",
+      "merge": "f276a1d6c27620c7e5984758bf026d6989c06b72"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16516,
+      "branch": "upstream/tui-compact-skill-reads",
+      "sha": "c8df3938c895b6c03dae8284171016ecbd01c8d7",
+      "merge": "1d23653fad952590053415c56567dccb223a1953"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16521,
+      "branch": "upstream/skill-read-unchanged-stub",
+      "sha": "7323825d34880168db2b3500754e30bad9002a9e",
+      "merge": "5c8fff0aa4e89a306e98a618950ac40ef45045e8"
+    },
+    {
+      "number": 150,
+      "branch": "fix/retry-stream-incomplete-error-event",
+      "sha": "b48204f20cff72041904862770d1878a6dee57c5",
+      "merge": "b76372c30443be0dd0366aa701fefffca9a2e8a8"
+    },
+    {
+      "branch": "feat/peer-session-messages",
+      "number": 23,
+      "sha": "8b34179cb9c55d427a295fad13a43ec51f3a32b1",
+      "merge": "4f5427bb4db97ff7e87f8a6a7c28a2a2838b36fa"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16526,
+      "branch": "upstream/extension-context-copy-on-write",
+      "sha": "ef3a865867bbc6bb9732ac6f2afb0e10a8ae0896",
+      "merge": "9453c6a2415930f61825785fda8e0eaf62bd8289"
+    },
+    {
+      "branch": "feat/tui-fps-meter",
+      "number": 29,
+      "sha": "b2118d2d8191da5bd3ae4f4334288dc4f714c6bf",
+      "merge": "d10db74c38716e69d584bc9123943e2d758cfa68"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16542,
+      "branch": "upstream/tui-keypress-render-lag",
+      "sha": "b113491b58b2d191c3d995d9234b4c790c17c012",
+      "merge": "8cb5f7dd735aa0c09148a3c29a5d71892cbbdacb"
+    },
+    {
+      "branch": "feat/subagent-time-signals",
+      "number": 39,
+      "sha": "3ce084f5b65f68914379ece20943aa8a0c4c124a",
+      "merge": "8e74082f5858e845fca071c24f502d48b84802d9"
+    },
+    {
+      "branch": "feat/requirements-ledger",
+      "number": 41,
+      "sha": "d6ab1abcf2f9c9732b74ae634da694579900fd38",
+      "merge": "5e0e584f6511fc1c72b4d8058f5e589be131d704"
+    },
+    {
+      "branch": "fix/extension-builtin-resolution",
+      "number": 81,
+      "sha": "db3656a56d7b95bdc76b54241f943d6178d79b7c",
+      "merge": "78434874dee79c656d6d632897b5a14254b7b401"
+    },
+    {
+      "branch": "topic/natives-process",
+      "number": 88,
+      "sha": "b206d0f05c87d7071e105a641ab11844396801fe",
+      "merge": "f504d739220ddbfbfc9c1e045f0e7cad40d22b85"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16523,
+      "branch": "upstream/isolated-worktrees-clean-head",
+      "sha": "533f8e3cd6b4c226d2669f90881064b4293b499c",
+      "merge": "035ce20aaf7f6dc87b2addb869aae4e00e642bc3"
+    },
+    {
+      "branch": "topic/task-runtime-fixes",
+      "number": 90,
+      "sha": "65679686a5d219d0ef0666a006731c8a34259135",
+      "merge": "fc4f5157b4241ad191f3fbf02afc13d69ccd6b57"
+    },
+    {
+      "branch": "topic/rt-agent-runtime-core",
+      "number": 92,
+      "sha": "921b94f21be6e0bf0b3fb8dd44c6f97e5e899b3f",
+      "merge": "257df8316e36a934d67f9913f725410dd21f0723"
+    },
+    {
+      "branch": "topic/rt-restart-queue",
+      "number": 93,
+      "sha": "8847e85e37ab577a4a1567b02645a37efa7b1f73",
+      "merge": "2cf2479793fa3a52cb2249d434c19542b6d01156"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16531,
+      "branch": "upstream/tab-title-project",
+      "sha": "745f0eaeef424a5ca6875868a62237e99bc932e0",
+      "merge": "5ca6874ad7408f4ea4e91ec87076497fae22d30b"
+    },
+    {
+      "branch": "fix/impl-worker-effort-cap",
+      "number": 95,
+      "sha": "d11a57d676d59f03698f59e4f34c98b9498b61b7",
+      "merge": "61cdd0238316d6294bffd8a5c4b203451b1c09ba"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16532,
+      "branch": "upstream/provider-exhaustion-cooldown",
+      "sha": "2edc57a0ad16c79194b22485d682066c69c670d5",
+      "merge": "7cfa267a6ad1ce7885332c909e05c6c73a2c0ef6"
+    },
+    {
+      "branch": "fix/bash-service-async-env",
+      "number": 99,
+      "sha": "3b911480cc6be31a50b4303ae6225826577a2232",
+      "merge": "6cf253994744fced7a7daff21edc0f22ac4bd57f"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16514,
+      "branch": "upstream/read-raster-raw-lines",
+      "sha": "e55d758397a97d0c63674da31030a371c5171780",
+      "merge": "d31385bb78d0164cbf52b277ef3ec062ea6af7ee"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 15637,
+      "branch": "upstream/semicolon-internal-url-lists",
+      "sha": "2fd8430aaaff88ca4c52abac5dcbcb3ab1586469",
+      "merge": "ed061d14e1126151cad2a3620d8bc737e65f70b7"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16538,
+      "branch": "upstream/edit-reject-invalid-put",
+      "sha": "ea89c5bc7eedd470c8afb179c932b401464c7758",
+      "merge": "5aa1204c09bb3571257ebfa0b2cd8b5793b8f238"
+    },
+    {
+      "branch": "fix/yield-terminal-once",
+      "number": 108,
+      "sha": "bd127b4057808edd5cf5a4ecc71c05d043cd5e27",
+      "merge": "b9b8494f165f120fcb9d59636569b84af10b1296"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16524,
+      "branch": "upstream/readonly-agent-reply",
+      "sha": "03379d47077d9974ae51f576178242854907b65d",
+      "merge": "baef047c61690477b4f7375d1d8b2f639a59a474"
+    },
+    {
+      "branch": "fix/isolated-merge-back",
+      "number": 112,
+      "sha": "08abf0230aa8241194eb052c6e49bd7d3d456131",
+      "merge": "ab2829a472593f675d6b5ecf2919a9ed6a4ec31b"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 15632,
+      "branch": "upstream/tool-env-no-node-channel",
+      "sha": "e3afc491b3084e38f4c3e30ec974311a5565295f",
+      "merge": "0dac66f351722fc4ce3c04c3e29b6064a5d083ae"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16540,
+      "branch": "upstream/models-last-good-retention",
+      "sha": "912ef72f79f354c68f1b84dee772fafbea12889d",
+      "merge": "97472093d0821a429540f0565d381d42cb04db6e"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16518,
+      "branch": "upstream/model-id-explicit-fail-closed",
+      "sha": "2482479e5a2792a53d1ee1c10a8951fd862937db",
+      "merge": "b5d24d0ef07dc4abd50fa4e65a3ac48871ee637a"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16528,
+      "branch": "upstream/spawn-model-fail-closed",
+      "sha": "ff96970c674aeb7967c86327592d2e9722b180ae",
+      "merge": "a438a0fb1f777981fc7f14490fb95d2c4b8a8361"
+    },
+    {
+      "branch": "fix/task-fallback-trigger-attribution",
+      "number": 120,
+      "sha": "b8741bf19e3fd09c012be65341f7cebd5a893c6e",
+      "merge": "c182789c14809edf09ddc85dda583a9c01b97a39"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16543,
+      "branch": "upstream/oversized-tool-call-args",
+      "sha": "02e03aaff9729e8184e5a1051186e71b2de517d6",
+      "merge": "cf07bf96639578b665f2ecadd0062de539e0769e"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16525,
+      "branch": "upstream/responses-heartbeat-idle",
+      "sha": "7f08145aaff62b9ae72e5fd3f66f658f88b443ce",
+      "merge": "82d0bc45fa32e40a325b589fd8559070a9955987"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16527,
+      "branch": "upstream/parallel-check-runner",
+      "sha": "df0c72a7c90bc039c6132275ed7ef6e5cf7a7930",
+      "merge": "fb8ad0ec10359c1f43c73549cbfd42cf1d973b80"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16533,
+      "branch": "upstream/worker-workspace-dependency-owner",
+      "sha": "494bb2b68acd71a6ef160efd5b12aa3348c17102",
+      "merge": "d00ca96ab5206cba0ffeb2db143fe9708e7a87e9"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16512,
+      "branch": "upstream/bun-discovery-chunk-paths",
+      "sha": "e6eb56848438339e6a11571d06d4d3421dbc3d14",
+      "merge": "6b7a64b2334beb42482c50d4eda98f5510afb8e1"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16522,
+      "branch": "upstream/scrapers-discourse-gitlab",
+      "sha": "9506390007daf209347ae7b38100d4a413cd9f0d",
+      "merge": "caf97a84c9d85b42d7b034013f41e617794c0559"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16520,
+      "branch": "upstream/todo-open-panel",
+      "sha": "f421e93c68afe79be85348c74150ded634365e90",
+      "merge": "e965fdbe940923241464f7b99857fb29797a47c9"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16647,
+      "branch": "upstream/subagent-progress-redraw-unchanged",
+      "sha": "30cd81229bca9cc84d01527b885870f2eea85727",
+      "merge": "39f7e362ba8d725f05d077f0056fa25e349af673"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16659,
+      "branch": "upstream/ephemeral-turn-history-detach",
+      "sha": "4fa8ac6964b0b8160919bab3173f5abea6df72e9",
+      "merge": "b7b4a9749b9a035ccf8100cd661627b4716ffe8a"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16510,
+      "branch": "upstream/custom-answer-note-key",
+      "sha": "0e11058919e825ac07e009913ab6266d7797c2ab",
+      "merge": "ddcbdc1e7f6f7da3cc69c50844f18bf7d5eafeca"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 15988,
+      "branch": "upstream/sixel-chip-thumbnails",
+      "sha": "309983d9fd2d6bf5349e649a1a7268725e4a1aa2",
+      "merge": "9d00808a426bd19752f01d986d533836c0e285fe"
+    },
+    {
+      "branch": "fix/sixel-viewport-scroll",
+      "number": 136,
+      "sha": "fa5f9c43328fcaefb8248c09361a74cf83a3b8f4",
+      "merge": "c14c8f57061d7db1cadf0afb8bc6306007d4ef8e"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16515,
+      "branch": "upstream/services-survive-client-restart",
+      "sha": "ac50eef053d946fbf0ae9846cee42dedd7116bf5",
+      "merge": "36182ac2695631c7060391d277b54dba4de83995"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16534,
+      "branch": "upstream/persisted-history-off-thread",
+      "sha": "c1254f604b887a8629b8efe3b48230e55c19d578",
+      "merge": "1c7af7137f856989b8a043e65fdd4d6b24150427"
+    },
+    {
+      "number": 140,
+      "branch": "fix/prune-active-history",
+      "sha": "4d62e0920bc1824412003cadc0e028f77738f663",
+      "merge": "2b22c8bc300f284cdc9864988c36a59cb6e35a8f"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16511,
+      "branch": "upstream/cache-available-provider-models",
+      "sha": "727a9311d2cd32f9df6914080da429b76677956a",
+      "merge": "f3b7a749be6aa9c5b0556c85d5183cbaf2a00fb4"
+    },
+    {
+      "number": 146,
+      "branch": "topic/task-coordination-advisory-ownership",
+      "sha": "82c6592884c1fe24f38338cfc1ad840059148027",
+      "merge": "c6043d895dc850834677b9d6b15881401bfc1ddd"
+    },
+    {
+      "number": 147,
+      "branch": "feat/session-model-preset",
+      "sha": "dbc56d2a6750b285af733f38f237d8f8843a83a1",
+      "merge": "567090a448b0e27744dcc84457683540c1a6da4e"
+    },
+    {
+      "number": 148,
+      "branch": "feat/model-role-pools",
+      "sha": "7d8d56f9248106e202daf1524b37423fefffee0e",
+      "merge": "3bc5efdc58a6ec4999e2e76633ba6773e148e9f5"
+    },
+    {
+      "number": 149,
+      "branch": "topic/task-agent-fixed-effort",
+      "sha": "32f7447881edd00bbbae60ef46885119a674f8a5",
+      "merge": "7e582cdea133ce5e34c2e38873f6b2ff06437374"
+    },
+    {
+      "branch": "topic/owner-model-blacklist",
+      "number": 152,
+      "sha": "84631a2394090bf918db79f98376363c95da77ba",
+      "merge": "f9e1b1c5400c5ebb83d604fe172ae313a629b7fe"
+    },
+    {
+      "number": 155,
+      "branch": "fix/auth-db-salvage-credentials",
+      "sha": "81746e462ea0ea2ce855b94432f15b5ad2f0b72c",
+      "merge": "dc28e19caf38976b4dc523bcc32cc0a3c9e68d8d"
+    },
+    {
+      "number": 156,
+      "branch": "fix/free-pool-account-cooldown",
+      "sha": "8a56c8a74e5c8fdbbf6d604547d00b47368cee09",
+      "merge": "c72eec09c0ae6e1cfb1f25580c54816775c9ab63"
+    },
+    {
+      "number": 157,
+      "branch": "fix/goal-no-auto-pause",
+      "sha": "780df7698c6dd580d05bafa3e86cfdb0247ff689",
+      "merge": "ad619eb124f10d6975fb081e53db2d5fdbb32a5c"
+    },
+    {
+      "number": 158,
+      "branch": "fix/codex-ws-limit-reconnect",
+      "sha": "3192ee9a3fbf8f8e424f8ef62b702de859a7b726",
+      "merge": "2b2356710f3ee934cabda88bf2a08dc3cc0e2ad8"
+    },
+    {
+      "number": 159,
+      "branch": "fix/paste-blank-image",
+      "sha": "f2605aec2337e1d2329d74b46b845d078b5aec7b",
+      "merge": "14aaa3f820294c5fd814e2c6af0eb213a577cfeb"
+    },
+    {
+      "number": 161,
+      "branch": "fix/muse-402-fallback",
+      "sha": "dff37c1ef1cc981895dec507d97c7e84f1c042aa",
+      "merge": "c22857db8ca212c17417c098a249cd298abaea85"
+    },
+    {
+      "number": 162,
+      "branch": "fix/instruction-file-refresh",
+      "sha": "6e9c89c1379ea5b13e75faec38916daa0505a42c",
+      "merge": "0ccfa741cb76b8fb4882293f0f3a0e194c9ef82d"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 13210,
+      "branch": "fix/libei-device-discovery-readiness",
+      "sha": "183b61e71d27b4d14bd3c8ae58e9124cf1cb6a33",
+      "merge": "dddb05b62ecb34981dc7bb721742e62e5bee8ddf"
+    },
+    {
+      "number": 163,
+      "branch": "feat/task-project-agents-md",
+      "sha": "e327f3608fc73a88097b047b96b0507b13501468",
+      "merge": "52b3400a119bd872a2f3e91b7d05d81409875a32"
+    },
+    {
+      "number": 164,
+      "branch": "fix/persisted-revive-extension-roots",
+      "sha": "db6c34fb5df4502d17c7d18605bce6bbaedaf05b",
+      "merge": "98c1a38e8f0681d83725e5ed2ce2e1168a130d45"
+    },
+    {
+      "number": 165,
+      "branch": "fix/status-current-work-title",
+      "sha": "d397adf02b6169c3533411b295503bbc5689f66e",
+      "merge": "0bdc792bcfe5495ae025cbbcab253a9a21ecb68d"
+    },
+    {
+      "number": 166,
+      "branch": "upstream/stable-system-prompt-prefix",
+      "sha": "605acc112826800e3ea92c8b964cc44eecfa2e6f",
+      "merge": "51013f157b72bc68696296cc6c6ed14b00fac099"
+    },
+    {
+      "number": 167,
+      "branch": "fix/session-rewrite-latency",
+      "sha": "6be1554f2b64aa08cd48f72e5752b89d72347881",
+      "merge": "15046d64f322d03ca3cf7ea6a43995c1ae621706"
+    },
+    {
+      "number": 168,
+      "branch": "topic/usage-shared-backoff",
+      "sha": "dd56aad7497bb6cc10ec79d4775467407516424a",
+      "merge": "0a212fd0ae5b3fc91d3e8e08b0d461b7e40f6b7b"
+    },
+    {
+      "number": 169,
+      "branch": "fix/anthropic-thread-cache-budget",
+      "sha": "8b0f997bb93d5bbd3f9f63f793d211ae20400f33",
+      "merge": "59b4706433fe6a8a137984108788eff7dd6c2d83"
+    },
+    {
+      "number": 170,
+      "branch": "fix/tui-job-control-raw-mode",
+      "sha": "a1e86e2dfdfa1ab0822245ab62b82467be4321ec",
+      "merge": "3de40fca4b7fcf814a3365dfca58574e34ac206f"
+    },
+    {
+      "number": 171,
+      "branch": "fix/anthropic-thinking-drop-diagnostics",
+      "sha": "f9b00c8980e0738f0f456e9f9bdf78a4dbe32d82",
+      "merge": "782feabe08639bc8b0d8202f392eaf833533b6bb"
+    }
+  ],
+  "manifestSha256": "a5a702aecff4faebaf4b0dab84c305dfc45f3a28c6f69701342cc644498f6589"
+}

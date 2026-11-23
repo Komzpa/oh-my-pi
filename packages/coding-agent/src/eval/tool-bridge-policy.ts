@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import { isRecord } from "@oh-my-pi/pi-utils";
 
 /** Tool-command state of the session whose eval bridge started the current async chain. */
 const evalBridgeCall = new AsyncLocalStorage<object>();
@@ -21,6 +22,13 @@ export function isEvalBridgeToolCall(origin: object): boolean {
  * Checkpoint/rewind need direct toolResult events to commit session changes;
  * yield needs direct loop events to finalize the delegated task.
  */
-export function isEvalBridgeToolCallable(tool: Pick<AgentTool, "name">): boolean {
-	return tool.name !== "checkpoint" && tool.name !== "rewind" && tool.name !== "yield";
+export function isEvalBridgeToolCallable(tool: Pick<AgentTool, "name">, args?: unknown): boolean {
+	if (tool.name === "checkpoint" || tool.name === "rewind" || tool.name === "yield") return false;
+	if (tool.name !== "task" || !isRecord(args)) return true;
+	// Audit admission/intake needs direct agent-loop events, including owner-bound
+	// qa-auditor calls without explicit IDs and inherited batched task agents.
+	const audit = (value: Record<string, unknown>): boolean =>
+		(typeof value.agent === "string" && value.agent.trim() === "qa-auditor") ||
+		(Array.isArray(value.requirementIds) && value.requirementIds.length > 0);
+	return !audit(args) && !(Array.isArray(args.tasks) && args.tasks.some(item => isRecord(item) && audit(item)));
 }

@@ -154,6 +154,50 @@ describe("createAgentSession session storage isolation", () => {
 			await session.dispose();
 		}
 	});
+
+	it("routes interactive prompts through Ask when UI-only behavior is disabled", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-ask-prompts-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const { session, setToolUIContext } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: path.join(tempDir, "agent"),
+			modelRegistry: sharedModelRegistry,
+			settings: Settings.isolated(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			hasUI: false,
+			interactivePrompts: true,
+		});
+		const dialog = Promise.withResolvers<{ data: { choice: string } } | undefined>();
+		const formDialog = vi.fn(() => dialog.promise);
+		setToolUIContext({ formDialog } as never, true);
+		const sendUserMessage = vi.spyOn(session, "sendUserMessage").mockResolvedValue();
+		try {
+			const ask = session.getToolByName("ask");
+			if (!ask) throw new Error("Expected Ask with interactivePrompts enabled");
+			const result = await ask.execute(
+				"ask-sdk-1",
+				{
+					html: '<form><label><input type="radio" name="choice" value="yes" checked>Yes</label></form>',
+				},
+				undefined,
+				undefined,
+				{ hasUI: true, ui: { formDialog }, abort: vi.fn() } as never,
+			);
+			expect(result.details?.pending?.id).toBe("ask-sdk-1");
+			dialog.resolve({ data: { choice: "yes" } });
+			await dialog.promise;
+			await Promise.resolve();
+			expect(sendUserMessage).toHaveBeenCalledWith("Answer to ask-sdk-1 [choice]: Yes");
+		} finally {
+			await session.dispose();
+		}
+	});
 	it("keeps subagent local:// mappings from replacing the process-global override", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-local-override-${Snowflake.next()}-`));
 		tempDirs.push(tempDir);

@@ -1,3 +1,4 @@
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * MCP client operations of a session.
  *
@@ -503,9 +504,11 @@ export async function connectToServer(
 	try {
 		// Race the whole sequence against the signal: attaching does not observe it at every step.
 		if (!isMCPTimeoutEnabled(timeoutMs)) {
-			return await untilAborted(options?.signal, connect());
+			return await launchStep(`mcp.connect.wait:${name}`, () => untilAborted(options?.signal, connect()));
 		}
-		return await withTimeout(connect(), timeoutMs, new MCPConnectionTimeoutError(name, timeoutMs), options?.signal);
+		return await launchStep(`mcp.connect.wait:${name}`, () =>
+			withTimeout(connect(), timeoutMs, new MCPConnectionTimeoutError(name, timeoutMs), options?.signal),
+		);
 	} catch (error) {
 		controller.abort(error);
 		listens.close();

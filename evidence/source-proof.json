@@ -1,0 +1,30 @@
+{
+  "frozenJournal": "/home/kom/proj/ai_pr/omp-turnfreeze-20261107/fresh.jsonl",
+  "frozenBytes": 2923747703,
+  "sourceFiles": {
+    "packages/coding-agent/src/internal-urls/context.ts": {
+      "laneSha256": "a7f88bbb3715a48fda9bafcd347ef7a8e59f0c7741af2f22ab6027081496a6dd",
+      "offlineSha256": "7e2b48369ccf139143ef9e34d44af904d5ab1539edfedbe3edd52f91dcde73a3"
+    },
+    "packages/coding-agent/src/internal-urls/history-protocol.ts": {
+      "laneSha256": "0314e35dc5aabe49277a12bdb4dbe4b20881317b742b398715e0be16863fafed",
+      "offlineSha256": "0314e35dc5aabe49277a12bdb4dbe4b20881317b742b398715e0be16863fafed"
+    },
+    "packages/coding-agent/src/internal-urls/router.ts": {
+      "laneSha256": "fe165f3b455777c69437d35610d8cd73f7f121a29f43463a57dbaba2c7373868",
+      "offlineSha256": "fe165f3b455777c69437d35610d8cd73f7f121a29f43463a57dbaba2c7373868"
+    },
+    "packages/coding-agent/src/internal-urls/types.ts": {
+      "laneSha256": "65229091f69d052d7352ee822c1e901d71dc86d21d1afb36fe1c58feb37a1d4b",
+      "offlineSha256": "bb2051975c7e0396fb04eb5d7ceced7dab0fb0720fffa47fa81cb3a5c6bace52"
+    },
+    "packages/coding-agent/src/internal-urls/url-filesystem.ts": {
+      "laneSha256": "75f2251c6f437ec78e52b17c7645fb555adeffc775ca3aa1003af598e174cb49",
+      "offlineSha256": "2e69ceb8b0bdbe4e329184fcf5590a4451c085ba476771f49388f891b4cd072e"
+    },
+    "packages/coding-agent/src/tools/index.ts": {
+      "laneSha256": "7e18fbc88118fded1b5f6606fd3f7ee217598e3ece9153fd5ed3bb9ead827cf4",
+      "offlineSha256": "fbe8b5416a2e311ed69f75def6cd436184c251b0098b02066c396462b5ca4402"
+    }
+  }
+}

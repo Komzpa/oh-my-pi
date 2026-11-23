@@ -1,0 +1,1 @@
+Current whole-plan finish {{finish}} is after the delivery deadline {{deadline}}. Preserve the requested scope and fixed deadline. Use returned worker findings, actual executable capacity, dependencies and remaining acceptance/integration/delivery work to choose a viable route. A forecast miss alone does not authorize scope cuts, moving the deadline or pausing.

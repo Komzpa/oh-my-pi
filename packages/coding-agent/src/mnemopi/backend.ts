@@ -37,6 +37,7 @@ import {
 } from "./config";
 import { embeddingFailureNotifier } from "./embedding-notice";
 import {
+	getMnemopiRecallScope,
 	getMnemopiScopedBanks,
 	getMnemopiScopedDbPaths,
 	getMnemopiSessionState,
@@ -159,16 +160,24 @@ export const mnemopiBackend: MemoryBackend = {
 		}
 	},
 
-	async buildDeveloperInstructions(_agentDir, _cwd, settings, session): Promise<string | undefined> {
+	async buildDeveloperInstructions(_agentDir, _cwd, settings, _session): Promise<string | undefined> {
 		return withLoopPhase("mnemopi.recall", () => {
-			const state = getMnemopiSessionState(session);
-			const primary = state?.aliasOf ?? state;
 			const parts = [prompt.render(mnemopiInstructions)];
-			if (primary?.lastRecallSnippet) parts.push(primary.lastRecallSnippet);
 			const rendered = parts.join("\n\n").trim();
 			if (!rendered) return undefined;
 			return truncateApproxTokens(rendered, cfgMnemopiInjectionTokenLimit.get(settings));
 		});
+	},
+
+	conversationScope(session) {
+		const state = getMnemopiSessionState(session);
+		return state && getMnemopiRecallScope((state.aliasOf ?? state).config);
+	},
+
+	async buildConversationContext(session, recall) {
+		const state = getMnemopiSessionState(session);
+		const primary = state?.aliasOf ?? state;
+		return recall ?? (primary?.lastRecallSnippet && state?.budgetRecallBlock(primary.lastRecallSnippet));
 	},
 
 	async beforeAgentStartPrompt(session, promptText, signal): Promise<MemoryPromptPreparation | undefined> {

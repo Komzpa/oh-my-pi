@@ -125,8 +125,10 @@ it.skipIf(process.platform === "win32")(
 it.skipIf(process.platform === "win32")(
 	"keeps background jobs an overlapping call starts alive and says they stay in its copy",
 	async () => {
-		const tool = bashTool({ "bash.autoBackground.thresholdMs": 100 });
-		expect((await run(tool, "sleep 2")).async?.state).toBe("running");
+		// Fork: a forked copy shell runs in its own tool slice, so starting it takes tens of ms;
+		// a 100 ms threshold auto-backgrounded the overlapping call itself under load.
+		const tool = bashTool({ "bash.autoBackground.thresholdMs": 1_000 });
+		expect((await run(tool, "sleep 3")).async?.state).toBe("running");
 
 		const overlapping = await run(tool, "/bin/sleep 30 & printf %s $!");
 		expect(overlapping.text).toContain("Background jobs started here run in a copy of the busy session shell");

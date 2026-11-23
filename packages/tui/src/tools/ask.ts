@@ -23,11 +23,25 @@ import { type HtmlForm, parseHtmlForm } from "../html-form/parse";
 /** Answers and selected-option notes displayed for an ask tool result. */
 export interface AskToolDetails {
 	/** Each named field's question and answer text, in form order (from `formAnswers`). */
-	answers: FormAnswer[];
+	answers?: FormAnswer[];
 	/** Notes attached to selected options; separate from the answer data. */
 	notes?: OptionNote[];
 	/** The deadline submitted the form's current values instead of the user. */
 	timedOut?: boolean;
+	pending?: {
+		id: string;
+		sessionId?: string;
+		html: string;
+		questions: {
+			id: string;
+			question: string;
+			options: { label: string }[];
+			multi?: boolean;
+			recommended?: number;
+		}[];
+	};
+	workingDefaults?: { id: string; option: string }[];
+	critical?: { kind: "irreversible" | "public" | "hands" | "credential"; reason: string };
 }
 
 // =============================================================================
@@ -185,6 +199,7 @@ function describeAnswer(answer: FormAnswer, shown: string, key: string, notes: r
 }
 
 function describeAskResult(result: ToolRenderResult<AskToolDetails>, args: AskRenderArgs | undefined): NativeToolView {
+	if (result.details?.pending) return describeAskCall({ html: result.details.pending.html });
 	const answers = detailsAnswers(result.details);
 	const notes = detailsNotes(result.details);
 	const form = argsForm(args);
@@ -235,6 +250,16 @@ export const askToolRenderer = {
 		uiTheme: Theme,
 		args?: AskRenderArgs,
 	): Component {
+		const pending = result.details?.pending;
+		if (pending) {
+			// A non-interactive (gated) ask returns before anyone answers: name its questions as waiting.
+			const header = renderStatusLine({ icon: "pending", title: "Ask" }, uiTheme);
+			const lines = pending.questions.map(question => {
+				const options = question.options.map(option => `\n  ${uiTheme.fg("dim", `○ ${oneLine(option.label)}`)}`);
+				return `\n${oneLine(question.question)}${options.join("")}`;
+			});
+			return new Text(`${header}${lines.join("")}`, 0, 0);
+		}
 		const answers = detailsAnswers(result.details);
 		if (!answers) {
 			const txt = result.content[0];

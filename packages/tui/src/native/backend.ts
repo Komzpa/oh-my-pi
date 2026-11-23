@@ -513,8 +513,8 @@ export class NativeBackend {
 	}
 
 	/** Reconcile and send a frame, unless the target surface is out of credits. */
-	render(): void {
-		if (!this.#live) return;
+	render(): "held" | "unchanged" | "sent" {
+		if (!this.#live) return "held";
 		const overlays = this.#host.overlays();
 		let fullscreen = -1;
 		for (let i = overlays.length - 1; i >= 0; i--) {
@@ -559,7 +559,7 @@ export class NativeBackend {
 		if (!this.#hasCredit(surface)) {
 			surface.dirty = true;
 			this.#armStallTimer(surface);
-			return;
+			return "held";
 		}
 		surface.dirty = false;
 		const ops = surface.reconciler.reconcile({ main, dock, layer }, this.#cx);
@@ -573,9 +573,10 @@ export class NativeBackend {
 			logger.debug("TSP frame", { sf: surface.id, ops: ops.length, rows: surface.reconciler.fallbackCount });
 		}
 		this.#measureSheets(surface, overlays);
-		if (ops.length === 0) return;
+		if (ops.length === 0) return "unchanged";
 		this.#uploadBlobs(ops);
 		this.#sendFrame(surface, ops);
+		return "sent";
 	}
 
 	/**

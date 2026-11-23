@@ -6,6 +6,7 @@ import { LoginCancelledError } from "@oh-my-pi/pi-ai/error";
 import * as launchModule from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
 import { captureBrowserSession } from "@oh-my-pi/pi-coding-agent/utils/browser-session";
 import type { Browser, LaunchOptions, PuppeteerNode } from "puppeteer-core";
+import puppeteer from "puppeteer-core";
 
 const request = {
 	url: "https://www.perplexity.ai/auth/signin",
@@ -49,7 +50,10 @@ function browserFixture() {
 	};
 	const launch = vi.fn(launchBrowser);
 	vi.spyOn(launchModule, "ensureSignInChromiumExecutable").mockResolvedValue("/fake/chromium");
-	const load = vi.spyOn(launchModule, "loadPuppeteer").mockResolvedValue({ launch } as unknown as PuppeteerNode);
+	const load = vi.spyOn(launchModule, "loadPuppeteer").mockResolvedValue({
+		launch,
+		defaultArgs: puppeteer.defaultArgs.bind(puppeteer),
+	} as unknown as PuppeteerNode);
 	return { browser, page, readCookies, launch, launchBrowser, load };
 }
 
@@ -67,14 +71,15 @@ describe("browser session capture", () => {
 	});
 
 	it("launches Chromium outside automation mode with sandbox and TLS checks intact", async () => {
-		const puppeteer = await launchModule.loadPuppeteer();
 		const fixture = browserFixture();
 		await captureBrowserSession(request);
 		const options = fixture.launch.mock.calls[0][0];
 		const ignored = options.ignoreDefaultArgs;
-		if (!Array.isArray(ignored)) throw new Error("Sign-in launch must filter Puppeteer defaults selectively");
-		// Same filtering Puppeteer applies when building the Chromium command line.
-		const argv = (await puppeteer.defaultArgs(options)).filter(arg => !ignored.includes(arg));
+		const argv =
+			process.platform === "linux"
+				? (options.args ?? [])
+				: (await puppeteer.defaultArgs(options)).filter(arg => !Array.isArray(ignored) || !ignored.includes(arg));
+		if (process.platform === "linux") expect(ignored).toBe(true);
 		// Google sign-in rejects automation-controlled browsers as "may not be secure" (#16141).
 		expect(argv).not.toContain("--enable-automation");
 		expect(argv).toContain("--disable-blink-features=AutomationControlled");

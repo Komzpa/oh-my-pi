@@ -1,0 +1,777 @@
+[
+  {
+    "line": 73631,
+    "input": {
+      "context": "# Goal\nClose delivered rows at the pushed head. Artifact for every audit: git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd (clean checkout, Darafei's dev server serves it; read back served cwd/HEAD). Read-only. Deadline 09:50. Use absolute paths in collateral tables. Evidence dir: /home/kom/proj/sunbim/evidence/c532dce8c/qa/ (if writes are refused use local:// and give absolute paths).",
+      "tasks": [
+        {
+          "name": "AuditHeatPipes",
+          "requirementIds": [
+            "R157"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R157 for TODO row \"Adaptive layout: heat pipes reach heat plant\" at its current artifact (row \"Adaptive layout: heat pipes reach heat plant\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Return one table row per exact ID; do not append letter suffixes.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditPresetsFull",
+          "requirementIds": [
+            "R157"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R157 for TODO row \"Presets reach 100% configuration\" at its current artifact (row \"Presets reach 100% configuration\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Return one table row per exact ID; do not append letter suffixes.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditBragInventory",
+          "requirementIds": [
+            "R170"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R170 for TODO row \"Brag video: inventory user-visible changes since 2026-10-29\" at its current artifact (row \"Brag video: inventory user-visible changes since 2026-10-29\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). The inventory output is in history://BragChanges. If the rendered UI collateral is required, compare base 2e4229b05 vs c532dce8c with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditRackFit",
+          "requirementIds": [
+            "R156",
+            "R163"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R156, R163 for TODO row \"Rack tiles fit panel height at 1568, no scrollbar\" at its current artifact (row \"Rack tiles fit panel height at 1568, no scrollbar\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Existing proof: /home/kom/proj/sunbim/evidence/9b82f1d9be6f119d90ce1e0f61ea1eeb215614dc/rack-input-r2/ (report.json; rack-1568-492.png, rack-1568-900.png). Before: /home/kom/.omp/wt/t830872f51/m/tmp/power-proof/. Collateral table with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "model": "codex-lb/gpt-6.1-terra"
+        }
+      ]
+    },
+    "phases": [
+      {
+        "name": "SimReady",
+        "tasks": [
+          {
+            "content": "Rack tiles fit panel height at 1568, no scrollbar",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Release unit tier red on pipeline 1282: fix 11 tests"
+              ],
+              "owner": "ReleaseTierRepair-2"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Power panel",
+        "tasks": [
+          {
+            "content": "Adaptive layout: heat pipes reach heat plant",
+            "status": "pending",
+            "schedule": {
+              "dependencies": [
+                "Final full gate and push of the branch"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "HeatLabelClear:1793833124129"
+                },
+                {
+                  "attemptId": "LandHeatLabels-2:1793837350430"
+                }
+              ],
+              "review": "user",
+              "speculativeOn": "Adaptive layout: heat pipes reach heat plant"
+            }
+          },
+          {
+            "content": "Presets reach 100% configuration",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Final full gate and push of the branch"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "AdaptiveRoomsStrong:1793841696714"
+                }
+              ],
+              "review": "user"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Final handoff",
+        "tasks": [
+          {
+            "content": "Brag video: inventory user-visible changes since 2026-10-29",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [],
+              "owner": "BragChanges",
+              "attemptHistory": [
+                {
+                  "attemptId": "BragInventory:1793843707305"
+                }
+              ],
+              "review": "user",
+              "speculativeOn": "Brag video: inventory user-visible changes since 2026-10-29"
+            }
+          },
+          {
+            "content": "Final full gate and push of the branch",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Read Bitbucket pipeline on pushed head"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "FinalGate-2:1793846946167"
+                }
+              ],
+              "owner": "Main",
+              "review": "user",
+              "speculativeOn": "Final full gate and push of the branch"
+            }
+          },
+          {
+            "content": "Release unit tier red on pipeline 1282: fix 11 tests",
+            "status": "completed",
+            "schedule": {
+              "dependencies": [],
+              "owner": "ReleaseTierRepair-2"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "line": 73649,
+    "input": {
+      "context": "# Goal\nClose delivered rows at the pushed head. Artifact for every audit: git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd (clean checkout, Darafei's dev server serves it; read back served cwd/HEAD). Read-only. Deadline 09:50. Use absolute paths in collateral tables. Evidence dir: /home/kom/proj/sunbim/evidence/c532dce8c/qa/ (if writes are refused use local:// and give absolute paths).",
+      "tasks": [
+        {
+          "name": "AuditHeatPipes",
+          "requirementIds": [
+            "R157"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R157 for TODO row \"Adaptive layout: heat pipes reach heat plant\" at its current artifact (row \"Adaptive layout: heat pipes reach heat plant\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Return one table row per exact ID; do not append letter suffixes.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Adaptive layout: heat pipes reach heat plant",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditPresetsFull",
+          "requirementIds": [
+            "R157"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R157 for TODO row \"Presets reach 100% configuration\" at its current artifact (row \"Presets reach 100% configuration\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Return one table row per exact ID; do not append letter suffixes.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Presets reach 100% configuration",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditBragInventory",
+          "requirementIds": [
+            "R170"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R170 for TODO row \"Brag video: inventory user-visible changes since 2026-10-29\" at its current artifact (row \"Brag video: inventory user-visible changes since 2026-10-29\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). The inventory output is in history://BragChanges. If rendered UI collateral is required, compare base 2e4229b05 vs c532dce8c with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditRackFit",
+          "requirementIds": [
+            "R156",
+            "R163"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R156, R163 for TODO row \"Rack tiles fit panel height at 1568, no scrollbar\" at its current artifact (row \"Rack tiles fit panel height at 1568, no scrollbar\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Existing proof: /home/kom/proj/sunbim/evidence/9b82f1d9be6f119d90ce1e0f61ea1eeb215614dc/rack-input-r2/ (report.json; rack-1568-492.png, rack-1568-900.png). Before: /home/kom/.omp/wt/t830872f51/m/tmp/power-proof/. Collateral table with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Rack tiles fit panel height at 1568, no scrollbar",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        }
+      ]
+    },
+    "phases": [
+      {
+        "name": "SimReady",
+        "tasks": [
+          {
+            "content": "Rack tiles fit panel height at 1568, no scrollbar",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Release unit tier red on pipeline 1282: fix 11 tests"
+              ],
+              "owner": "job:bg_6"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Power panel",
+        "tasks": [
+          {
+            "content": "Adaptive layout: heat pipes reach heat plant",
+            "status": "pending",
+            "schedule": {
+              "dependencies": [
+                "Final full gate and push of the branch"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "HeatLabelClear:1793833124129"
+                },
+                {
+                  "attemptId": "LandHeatLabels-2:1793837350430"
+                }
+              ],
+              "review": "user",
+              "speculativeOn": "Adaptive layout: heat pipes reach heat plant",
+              "owner": "AuditHeatPipes"
+            }
+          },
+          {
+            "content": "Presets reach 100% configuration",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Final full gate and push of the branch"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "AdaptiveRoomsStrong:1793841696714"
+                }
+              ],
+              "review": "user",
+              "owner": "AuditPresetsFull"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Final handoff",
+        "tasks": [
+          {
+            "content": "Brag video: inventory user-visible changes since 2026-10-29",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [],
+              "owner": "AuditBragInventory",
+              "attemptHistory": [
+                {
+                  "attemptId": "BragInventory:1793843707305"
+                }
+              ],
+              "review": "user",
+              "speculativeOn": "Brag video: inventory user-visible changes since 2026-10-29"
+            }
+          },
+          {
+            "content": "Final full gate and push of the branch",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Read Bitbucket pipeline on pushed head"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "FinalGate-2:1793846946167"
+                }
+              ],
+              "owner": "Main",
+              "review": "user",
+              "speculativeOn": "Final full gate and push of the branch"
+            }
+          },
+          {
+            "content": "Release unit tier red on pipeline 1282: fix 11 tests",
+            "status": "completed",
+            "schedule": {
+              "dependencies": [],
+              "owner": "job:1032281"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "line": 73658,
+    "input": {
+      "context": "# Goal\nClose delivered rows at the pushed head. Artifact for every audit: git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd (clean checkout, Darafei's dev server serves it; read back served cwd/HEAD). Read-only. Deadline 09:50. Use absolute paths in collateral tables. Evidence dir: /home/kom/proj/sunbim/evidence/c532dce8c/qa/ (if writes are refused use local:// and give absolute paths).",
+      "tasks": [
+        {
+          "name": "AuditPresetsFull",
+          "requirementIds": [
+            "R157"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R157 for TODO row \"Presets reach 100% configuration\" at its current artifact (row \"Presets reach 100% configuration\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Return one table row per exact ID; do not append letter suffixes.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Presets reach 100% configuration",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditBragInventory",
+          "requirementIds": [
+            "R170"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R170 for TODO row \"Brag video: inventory user-visible changes since 2026-10-29\" at its current artifact (row \"Brag video: inventory user-visible changes since 2026-10-29\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). The inventory output is in history://BragChanges. If rendered UI collateral is required, compare base 2e4229b05 vs c532dce8c with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditRackFit",
+          "requirementIds": [
+            "R156",
+            "R163"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R156, R163 for TODO row \"Rack tiles fit panel height at 1568, no scrollbar\" at its current artifact (row \"Rack tiles fit panel height at 1568, no scrollbar\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Existing proof: /home/kom/proj/sunbim/evidence/9b82f1d9be6f119d90ce1e0f61ea1eeb215614dc/rack-input-r2/ (report.json; rack-1568-492.png, rack-1568-900.png). Before: /home/kom/.omp/wt/t830872f51/m/tmp/power-proof/. Collateral table with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Rack tiles fit panel height at 1568, no scrollbar",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        }
+      ]
+    },
+    "phases": [
+      {
+        "name": "SimReady",
+        "tasks": [
+          {
+            "content": "Rack tiles fit panel height at 1568, no scrollbar",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Release unit tier red on pipeline 1282: fix 11 tests"
+              ],
+              "owner": "job:bg_6"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Power panel",
+        "tasks": [
+          {
+            "content": "Presets reach 100% configuration",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Final full gate and push of the branch"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "AdaptiveRoomsStrong:1793841696714"
+                }
+              ],
+              "review": "user",
+              "owner": "AuditPresetsFull",
+              "speculativeOn": "Presets reach 100% configuration"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Final handoff",
+        "tasks": [
+          {
+            "content": "Brag video: inventory user-visible changes since 2026-10-29",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [],
+              "owner": "AuditBragInventory",
+              "attemptHistory": [
+                {
+                  "attemptId": "BragInventory:1793843707305"
+                }
+              ],
+              "review": "user",
+              "speculativeOn": "Brag video: inventory user-visible changes since 2026-10-29"
+            }
+          },
+          {
+            "content": "Final full gate and push of the branch",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Read Bitbucket pipeline on pushed head"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "FinalGate-2:1793846946167"
+                }
+              ],
+              "owner": "Main",
+              "review": "user",
+              "speculativeOn": "Final full gate and push of the branch"
+            }
+          },
+          {
+            "content": "Release unit tier red on pipeline 1282: fix 11 tests",
+            "status": "completed",
+            "schedule": {
+              "dependencies": [],
+              "owner": "job:1032281"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "line": 73678,
+    "input": {
+      "context": "# Goal\nClose delivered rows at the pushed head. Artifact for every audit: git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd (clean checkout, Darafei's dev server serves it; read back served cwd/HEAD). Read-only. Deadline 09:50. Use absolute paths in collateral tables. Evidence dir: /home/kom/proj/sunbim/evidence/c532dce8c/qa/ (if writes are refused use local:// and give absolute paths).",
+      "tasks": [
+        {
+          "name": "AuditHeatPipes",
+          "requirementIds": [
+            "R157"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R157 for TODO row \"Adaptive layout: heat pipes reach heat plant\" at its current artifact (row \"Adaptive layout: heat pipes reach heat plant\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Return one table row per exact ID; do not append letter suffixes.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Adaptive layout: heat pipes reach heat plant",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditPresetsFull",
+          "requirementIds": [
+            "R157"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R157 for TODO row \"Presets reach 100% configuration\" at its current artifact (row \"Presets reach 100% configuration\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Return one table row per exact ID; do not append letter suffixes.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Presets reach 100% configuration",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditBragInventory",
+          "requirementIds": [
+            "R170"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R170 for TODO row \"Brag video: inventory user-visible changes since 2026-10-29\" at its current artifact (row \"Brag video: inventory user-visible changes since 2026-10-29\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Inventory output: history://BragChanges. If rendered UI collateral is required, compare base 2e4229b05 vs c532dce8c with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditRackFit",
+          "requirementIds": [
+            "R156",
+            "R163"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R156, R163 for TODO row \"Rack tiles fit panel height at 1568, no scrollbar\" at its current artifact (row \"Rack tiles fit panel height at 1568, no scrollbar\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Existing proof: /home/kom/proj/sunbim/evidence/9b82f1d9be6f119d90ce1e0f61ea1eeb215614dc/rack-input-r2/ (report.json; rack-1568-492.png, rack-1568-900.png). Before: /home/kom/.omp/wt/t830872f51/m/tmp/power-proof/. Collateral table with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Rack tiles fit panel height at 1568, no scrollbar",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        }
+      ]
+    },
+    "phases": [
+      {
+        "name": "SimReady",
+        "tasks": [
+          {
+            "content": "Rack tiles fit panel height at 1568, no scrollbar",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Release unit tier red on pipeline 1282: fix 11 tests"
+              ],
+              "owner": "job:bg_6"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Power panel",
+        "tasks": [
+          {
+            "content": "Adaptive layout: heat pipes reach heat plant",
+            "status": "pending",
+            "schedule": {
+              "dependencies": [
+                "Final full gate and push of the branch"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "HeatLabelClear:1793833124129"
+                },
+                {
+                  "attemptId": "LandHeatLabels-2:1793837350430"
+                }
+              ],
+              "review": "user",
+              "speculativeOn": "Adaptive layout: heat pipes reach heat plant",
+              "owner": "AuditHeatPipes"
+            }
+          },
+          {
+            "content": "Presets reach 100% configuration",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Final full gate and push of the branch"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "AdaptiveRoomsStrong:1793841696714"
+                }
+              ],
+              "review": "user",
+              "owner": "AuditPresetsFull",
+              "speculativeOn": "Presets reach 100% configuration"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Final handoff",
+        "tasks": [
+          {
+            "content": "Brag video: inventory user-visible changes since 2026-10-29",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [],
+              "owner": "AuditBragInventory",
+              "attemptHistory": [
+                {
+                  "attemptId": "BragInventory:1793843707305"
+                }
+              ],
+              "review": "user",
+              "speculativeOn": "Brag video: inventory user-visible changes since 2026-10-29"
+            }
+          },
+          {
+            "content": "Final full gate and push of the branch",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Read Bitbucket pipeline on pushed head"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "FinalGate-2:1793846946167"
+                }
+              ],
+              "owner": "Main",
+              "review": "user",
+              "speculativeOn": "Final full gate and push of the branch"
+            }
+          },
+          {
+            "content": "Release unit tier red on pipeline 1282: fix 11 tests",
+            "status": "completed",
+            "schedule": {
+              "dependencies": [],
+              "owner": "job:1032281"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "line": 73694,
+    "input": {
+      "context": "# Goal\nClose delivered rows at the pushed head. Artifact for every audit: git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd (clean checkout, Darafei's dev server serves it; read back served cwd/HEAD). Read-only. Deadline 09:50. Use absolute paths in collateral tables. Evidence dir: /home/kom/proj/sunbim/evidence/c532dce8c/qa/ (if writes are refused use local:// and give absolute paths).",
+      "tasks": [
+        {
+          "name": "AuditHeatPipes",
+          "requirementIds": [
+            "R157"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R157 for TODO row \"Adaptive layout: heat pipes reach heat plant\" at its current artifact (row \"Adaptive layout: heat pipes reach heat plant\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Return one table row per exact ID; do not append letter suffixes.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Adaptive layout: heat pipes reach heat plant",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditPresetsFull",
+          "requirementIds": [
+            "R157"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R157 for TODO row \"Presets reach 100% configuration\" at its current artifact (row \"Presets reach 100% configuration\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Return one table row per exact ID; do not append letter suffixes.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Presets reach 100% configuration",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditBragInventory",
+          "requirementIds": [
+            "R170"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R170 for TODO row \"Brag video: inventory user-visible changes since 2026-10-29\" at its current artifact (row \"Brag video: inventory user-visible changes since 2026-10-29\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Inventory output: history://BragChanges. If rendered UI collateral is required, compare base 2e4229b05 vs c532dce8c with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "model": "codex-lb/gpt-6.1-terra"
+        },
+        {
+          "name": "AuditRackFit",
+          "requirementIds": [
+            "R156",
+            "R163"
+          ],
+          "agent": "qa-auditor",
+          "task": "Audit exact requirement IDs R156, R163 for TODO row \"Rack tiles fit panel height at 1568, no scrollbar\" at its current artifact (row \"Rack tiles fit panel height at 1568, no scrollbar\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@c532dce8cce716cd9ebd8015dc445a811de9a4cd). Existing proof: /home/kom/proj/sunbim/evidence/9b82f1d9be6f119d90ce1e0f61ea1eeb215614dc/rack-input-r2/ (report.json; rack-1568-492.png, rack-1568-900.png). Before: /home/kom/.omp/wt/t830872f51/m/tmp/power-proof/. Collateral table with absolute before/after paths. Return one table row per exact ID.\nRetro: not requested.",
+          "solutionSpace": "audit only",
+          "previewIntegration": {
+            "task": "Rack tiles fit panel height at 1568, no scrollbar",
+            "kind": "refresh"
+          },
+          "model": "codex-lb/gpt-6.1-terra"
+        }
+      ]
+    },
+    "phases": [
+      {
+        "name": "SimReady",
+        "tasks": [
+          {
+            "content": "Rack tiles fit panel height at 1568, no scrollbar",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Release unit tier red on pipeline 1282: fix 11 tests"
+              ],
+              "owner": "job:bg_6"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Power panel",
+        "tasks": [
+          {
+            "content": "Adaptive layout: heat pipes reach heat plant",
+            "status": "pending",
+            "schedule": {
+              "dependencies": [
+                "Final full gate and push of the branch"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "HeatLabelClear:1793833124129"
+                },
+                {
+                  "attemptId": "LandHeatLabels-2:1793837350430"
+                }
+              ],
+              "review": "user",
+              "speculativeOn": "Adaptive layout: heat pipes reach heat plant",
+              "owner": "AuditHeatPipes"
+            }
+          },
+          {
+            "content": "Presets reach 100% configuration",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [
+                "Final full gate and push of the branch"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "AdaptiveRoomsStrong:1793841696714"
+                }
+              ],
+              "review": "user",
+              "owner": "AuditPresetsFull",
+              "speculativeOn": "Presets reach 100% configuration"
+            }
+          }
+        ]
+      },
+      {
+        "name": "Final handoff",
+        "tasks": [
+          {
+            "content": "Brag video: inventory user-visible changes since 2026-10-29",
+            "status": "in_progress",
+            "schedule": {
+              "dependencies": [],
+              "owner": "AuditBragInventory",
+              "attemptHistory": [
+                {
+                  "attemptId": "BragInventory:1793843707305"
+                }
+              ],
+              "review": "user",
+              "speculativeOn": "Brag video: inventory user-visible changes since 2026-10-29"
+            }
+          },
+          {
+            "content": "Final full gate and push of the branch",
+            "status": "completed",
+            "schedule": {
+              "dependencies": [
+                "Read Bitbucket pipeline on pushed head"
+              ],
+              "attemptHistory": [
+                {
+                  "attemptId": "FinalGate-2:1793846946167"
+                }
+              ],
+              "owner": "Main",
+              "review": "user",
+              "speculativeOn": "Final full gate and push of the branch"
+            }
+          },
+          {
+            "content": "Release unit tier red on pipeline 1282: fix 11 tests",
+            "status": "completed",
+            "schedule": {
+              "dependencies": [],
+              "owner": "job:1032281"
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

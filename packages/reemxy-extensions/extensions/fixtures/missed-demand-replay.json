@@ -1,0 +1,402 @@
+{
+  "sourceSha256": "eccde24cdd6fa7e33924f15aca8850cc01789e7ce938185a9818ad7f97ba44e1",
+  "sourceLines": [
+    2781,
+    6329,
+    7146
+  ],
+  "now": 1794051388014,
+  "entries": [
+    {
+      "type": "custom",
+      "customType": "reemxy-goal-deadlines",
+      "data": {
+        "version": 1,
+        "goalId": "auto-todo-plan",
+        "goalStartedAt": 1794035527,
+        "timezone": "Asia/Tbilisi",
+        "active": true,
+        "auto": true,
+        "stages": [
+          {
+            "id": "auto-plan-forecast",
+            "label": "Finish the TODO plan",
+            "expectedResult": "Complete the current TODO plan",
+            "deadlineAt": 1794045428
+          }
+        ],
+        "baselineDeadlineAt": 1794045428,
+        "autoPlanKey": "[[\"Follow-ups\",[[\"Guide Hall rack model step: readable layout\",[],{\"optimisticSeconds\":360,\"likelySeconds\":800,\"pessimisticSeconds\":1500,\"confidence\":\"medium\",\"basis\":\"accepted; re-audit after push\",\"updatedAt\":1793906671189}],[\"Facility 2D: too much empty space around site\",[],{\"optimisticSeconds\":1800,\"likelySeconds\":3000,\"pessimisticSeconds\":3600,\"confidence\":\"low\",\"basis\":\"accepted; re-audit at PR head; prior floor\",\"updatedAt\":1793866963642}],[\"Callouts during rotation match settled layout\",[],{\"optimisticSeconds\":240,\"likelySeconds\":450,\"pessimisticSeconds\":1000,\"confidence\":\"medium\",\"basis\":\"passes c6f01a0ce; re-audit after push\",\"updatedAt\":1793906671189}],[\"Main deploy pipeline: restore lost deploy script\",[],{\"optimisticSeconds\":280,\"likelySeconds\":700,\"pessimisticSeconds\":1300,\"confidence\":\"medium\",\"basis\":\"accepted; re-audit only\",\"updatedAt\":1793906671189}],[\"Plan click opens same panel as left list, abbreviations expanded\",[],{\"optimisticSeconds\":320,\"likelySeconds\":900,\"pessimisticSeconds\":1800,\"confidence\":\"medium\",\"basis\":\"accepted; re-audit R209\",\"updatedAt\":1793906671189}],[\"Camera stays above ground, orbit pivot at viewport centre\",[],{\"optimisticSeconds\":1444,\"likelySeconds\":1444,\"pessimisticSeconds\":2888,\"confidence\":\"low\",\"basis\":\"Measured floor git-pr-owner p50; previous attempt 25m\",\"updatedAt\":1793906671189}],[\"Generated UX transition graph with dead ends and wrong returns\",[\"UX graph: tab transitions and conflict Back modeled\"],{\"optimisticSeconds\":900,\"likelySeconds\":1500,\"pessimisticSeconds\":2700,\"confidence\":\"medium\",\"basis\":\"Two wrong edges in the generator plus a red/green unit test, regeneration and one e2e at 2 widths; npm ci adds about 3 min; task median 10 min\",\"updatedAt\":1794014853479}],[\"Use grid: row opens explainer panel, small inline toggle\",[],{\"optimisticSeconds\":1800,\"likelySeconds\":2800,\"pessimisticSeconds\":3500,\"confidence\":\"low\",\"basis\":\"full e2e union gate ~35-45 min under load 138\",\"updatedAt\":1793914698554}],[\"Facility decisions list: 8 pre-existing e2e failures\",[],{\"optimisticSeconds\":3600,\"likelySeconds\":4800,\"pessimisticSeconds\":6600,\"confidence\":\"low\",\"basis\":\"worker-measured ~80 min candidate run started ~12:35, then base keys ~20 min and recheck ~10 min\",\"updatedAt\":1793956704072}],[\"Collateral for \\\"Integrate finished lanes onto consolidated branch\\\": The Power group header carries a three-line sentence \\\"Required: 1.07\u20131.11 MW \u00b7 Supplied: 2 MW \u00b7 Surplus: 0.89\u20130.93 MW\\\" that wraps between \\\"Supplied:\\\" and \\\"2 MW\\\", separating the label from its value\",[],{\"optimisticSeconds\":1257,\"likelySeconds\":1257,\"pessimisticSeconds\":2514,\"confidence\":\"low\",\"basis\":\"Measured floor: p50 13m from ui-coder profile p50 (successful outcomes, n=725); previous attempt took 21m\",\"updatedAt\":1793962068388}],[\"Power source rows: remove red selection frame and grey boxes\",[],{\"optimisticSeconds\":360,\"likelySeconds\":720,\"pessimisticSeconds\":1500,\"confidence\":\"medium\",\"basis\":\"visual audit at 2 widths + base build; AuditIntegrate-5 took 7.6 min\",\"updatedAt\":1793961535626}],[\"Power source rows: title size and indent match sibling rows\",[\"Power source rows: remove red selection frame and grey boxes\"],{\"optimisticSeconds\":360,\"likelySeconds\":780,\"pessimisticSeconds\":1500,\"confidence\":\"medium\",\"basis\":\"closes with AuditPowerRows audit (dispatched 14:39, qa-auditor median 8 min)\",\"updatedAt\":1793962068388}],[\"Fix 4 new Facility e2e failures from helper gate\",[],{\"optimisticSeconds\":1500,\"likelySeconds\":2700,\"pessimisticSeconds\":3400,\"confidence\":\"low\",\"basis\":\"4 keys/3 specs; head rerun ~8 min at workers=1; bisect over 5 commits ~2 min/key/commit; fix unknown\",\"updatedAt\":1793962068388}],[\"Mac call: attribute 30 fps drop untraced\",[],{\"optimisticSeconds\":1561,\"likelySeconds\":1700,\"pessimisticSeconds\":3122,\"confidence\":\"low\",\"basis\":\"Measured floor p50 27m; 8 runs ~2 min each + setup + analysis\",\"updatedAt\":1793963733112}],[\"PR 112: rebase onto main after PR 111 merge and fix\",[],{\"optimisticSeconds\":300,\"likelySeconds\":600,\"pessimisticSeconds\":1200,\"confidence\":\"medium\",\"basis\":\"one audit + pipeline read\",\"updatedAt\":1793969719121}],[\"Power source rows: no red keyboard-focus frame\",[],{\"optimisticSeconds\":600,\"likelySeconds\":1200,\"pessimisticSeconds\":2400,\"confidence\":\"medium\",\"basis\":\"apply on PR 112 branch, push, audit R242/R243\",\"updatedAt\":1793965585680}],[\"UX graph: no other-package or runtime-only concrete edges\",[],{\"optimisticSeconds\":900,\"likelySeconds\":1500,\"pessimisticSeconds\":2700,\"confidence\":\"medium\",\"basis\":\"two generator rules + regenerate doc + unit test cases; coder p50 11 min, generator file ~1000 lines\",\"updatedAt\":1793963733112}],[\"Mau standup transcript into plans, requirements, knowledgebase\",[],{\"optimisticSeconds\":120,\"likelySeconds\":600,\"pessimisticSeconds\":1200,\"confidence\":\"medium\",\"basis\":\"only the runtime audit close remains\",\"updatedAt\":1793977875506}],[\"Facility orbit paints 30 fps: labels stop blocking frames\",[],{\"optimisticSeconds\":300,\"likelySeconds\":700,\"pessimisticSeconds\":1500,\"confidence\":\"low\",\"basis\":\"Proxy delivered; closes on Mac measurement or needs one more label throttle\",\"updatedAt\":1794025012871}],[\"Facility labels after rotation: leaders cross the building\",[],{\"optimisticSeconds\":900,\"likelySeconds\":1500,\"pessimisticSeconds\":2700,\"confidence\":\"medium\",\"basis\":\"candidate 2bac43d21 is built; two spec runs ~6 min each, classification and screenshots; repair only if the return-orbit oracle is red\",\"updatedAt\":1794033959736}],[\"Diagnose leader crossings after Facility rotation\",[],{\"optimisticSeconds\":900,\"likelySeconds\":1500,\"pessimisticSeconds\":2700,\"confidence\":\"low\",\"basis\":\"read-only repro + placement code read; researcher ~15-25 min\",\"updatedAt\":1793965585680}],[\"Land focus, UX graph, standup patches on PR 112\",[],{\"optimisticSeconds\":900,\"likelySeconds\":1500,\"pessimisticSeconds\":2700,\"confidence\":\"medium\",\"basis\":\"git am 4 patches on b140078ef (likely clean, disjoint files) + tsc/lint/precommit ~10 min + build + push + pipeline read; git-pr-owner anchors 4-15 min plus gates\",\"updatedAt\":1793966557042}],[\"UX graph: tab transitions and conflict Back modeled\",[],{\"optimisticSeconds\":600,\"likelySeconds\":1200,\"pessimisticSeconds\":2400,\"confidence\":\"medium\",\"basis\":\"Only the ROOT fast-forward plus audit remain\",\"updatedAt\":1794011316400}],[\"Split PR 112: docs-only, code into follow-up PR\",[],{\"optimisticSeconds\":300,\"likelySeconds\":600,\"pessimisticSeconds\":1200,\"confidence\":\"high\",\"basis\":\"2 pushes + 2 API calls + readback\",\"updatedAt\":1793980726836}],[\"Orbit fps measured on Darafei's Mac during a call\",[],{\"optimisticSeconds\":600,\"likelySeconds\":900,\"pessimisticSeconds\":1800,\"confidence\":\"low\",\"basis\":\"After release: Darafei runs mac-probe.js during a call (~5 min), lead reads numbers\",\"updatedAt\":1794025012871}]]],[\"Review redo 19:11\",[[\"Abbreviation expansions on every node, sorted\",[],{\"optimisticSeconds\":2067,\"likelySeconds\":2067,\"pessimisticSeconds\":3550,\"confidence\":\"low\",\"basis\":\"Measured floor coder p50; previous attempt 35m\",\"updatedAt\":1793906671189}]]],[\"Do items build\",[[\"Integrate finished lanes onto consolidated branch\",[],{\"optimisticSeconds\":300,\"likelySeconds\":420,\"pessimisticSeconds\":900,\"confidence\":\"medium\",\"basis\":\"AuditIntegrate-6 took 5.5 min with base build\",\"updatedAt\":1793961535626}]]],[\"Maksim call 06-11\",[[\"Maksim: Building layout broken, model incomplete\",[],{\"optimisticSeconds\":300,\"likelySeconds\":900,\"pessimisticSeconds\":1800,\"confidence\":\"medium\",\"basis\":\"delivered; qa audit of 3 requirements remains\",\"updatedAt\":1793984147789}],[\"Maksim: pipes stick out of the building\",[],{\"optimisticSeconds\":1086,\"likelySeconds\":1086,\"pessimisticSeconds\":2172,\"confidence\":\"low\",\"basis\":\"Measured floor p50 9m; previous attempt 19m; stages: inspect 11 actuals, update run ~160s, commit, verify run ~160s\",\"updatedAt\":1794025012871}],[\"Maksim: showcase scenario that demos cleanly on new UI\",[],{\"optimisticSeconds\":300,\"likelySeconds\":900,\"pessimisticSeconds\":1800,\"confidence\":\"medium\",\"basis\":\"delivered; only qa audit of 22 screenshots remains\",\"updatedAt\":1793983749715}],[\"60 MW preset adaptive 3 levels: generators through walls\",[],{\"optimisticSeconds\":600,\"likelySeconds\":1500,\"pessimisticSeconds\":3000,\"confidence\":\"medium\",\"basis\":\"Picks and checks in AdaptiveBatch, ROOT fast-forward, then audit\",\"updatedAt\":1794011781296}],[\"Plant on roof: checkbox like other boolean rows\",[],{\"optimisticSeconds\":600,\"likelySeconds\":1200,\"pessimisticSeconds\":2400,\"confidence\":\"medium\",\"basis\":\"move ROOT to PR114 head, run test + shots\",\"updatedAt\":1793986892852}],[\"Cooling pipes: consolidated realistic trunks, warm and cold both shown\",[],{\"optimisticSeconds\":1800,\"likelySeconds\":3000,\"pessimisticSeconds\":3600,\"confidence\":\"low\",\"basis\":\"Step B done at e95bbf83d (pair counts and duty radius, 23/23 unit tests); remaining: footprint oracle migration 10 min, Step C renderer 15 min, Step E footprint e2e and Heat captures 15 min\",\"updatedAt\":1794033959736}],[\"60 MW Adaptive L3 restored state: blank 3D canvas\",[],{\"optimisticSeconds\":1200,\"likelySeconds\":2400,\"pessimisticSeconds\":3500,\"confidence\":\"low\",\"basis\":\"Pre-existing: camera null, heartbeat stops at 7-8 in 60MW L3 localStorage journey; diagnose ~15m, fix ~10m, spec+gates ~10m\",\"updatedAt\":1793983612199}],[\"Collateral for \\\"Maksim: Building layout broken, model incomplete\\\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.\",[\"Levels that cannot fit show as conflict/risk, not silent revert\"],{\"optimisticSeconds\":1500,\"likelySeconds\":3000,\"pessimisticSeconds\":5400,\"confidence\":\"low\",\"basis\":\"verified after labels and levels land; the camera fit check comes after integration\",\"updatedAt\":1794016451059}],[\"Collateral for \\\"60 MW preset adaptive 3 levels: generators through walls\\\": New Reference building and transfer-switchgear callouts are clipped at the right viewport edge; a coolant-distribution callout is obscured by the zoom controls. The base also clips a CRAH callout, but the new labels remain unreadable.\",[],{\"optimisticSeconds\":1200,\"likelySeconds\":2100,\"pessimisticSeconds\":3300,\"confidence\":\"low\",\"basis\":\"Live reproduction still open; ui-coder-strong median 17 min, p90 52 min.\",\"updatedAt\":1793989963964}],[\"Collateral for \\\"Maksim: Building layout broken, model incomplete\\\": After applying two levels, the camera loses the building overview: the building extends beyond the narrow viewport, leaving only part of the floor visible and communication pipes covering much of the rack area. Before, the whole building footprint was visible.\",[\"Collateral for \\\"Maksim: Building layout broken, model incomplete\\\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.\"],{\"optimisticSeconds\":600,\"likelySeconds\":1200,\"pessimisticSeconds\":2400,\"confidence\":\"low\",\"basis\":\"same camera fit at 430 width; reuses the wide-viewport fix, adds narrow capture and bbox check\",\"updatedAt\":1794027925254}],[\"11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor\",[],{\"optimisticSeconds\":1200,\"likelySeconds\":1800,\"pessimisticSeconds\":3000,\"confidence\":\"medium\",\"basis\":\"new approach: cherry-pick 4 known commits onto 3fd440ac9 in a fresh worktree (npm ci 4 min, picks 3 min, tsc/lint/unit 5 min, build+floor-buttons spec 12 min, screenshots 3 min)\",\"updatedAt\":1794035527439}],[\"Pipe footprint goldens: 4 adaptive callout snapshots differ\",[\"11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor\"],{\"optimisticSeconds\":600,\"likelySeconds\":1200,\"pessimisticSeconds\":2400,\"confidence\":\"medium\",\"basis\":\"stable diffs (byte-identical repeats) are callout placement only; rebaseline after floor fix with git log -S provenance\",\"updatedAt\":1793990696214}],[\"Levels that cannot fit show as conflict/risk, not silent revert\",[\"11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor\"],{\"optimisticSeconds\":1200,\"likelySeconds\":2100,\"pessimisticSeconds\":3300,\"confidence\":\"low\",\"basis\":\"Risk/Levels conflict path partly done in R275 commit 435440718; remaining surfacing ~20 min + journey 10 min\",\"updatedAt\":1794027925254}],[\"Levelled plan builds with any power, cooling and room-cooling choice\",[],{\"optimisticSeconds\":1200,\"likelySeconds\":2400,\"pessimisticSeconds\":3600,\"confidence\":\"low\",\"basis\":\"browser diagnostic ~5 min + replay/fix ~15-25 min + one focused browser run ~8 min; the cause is not yet known\",\"updatedAt\":1794021097224}],[\"Land cooling commits 530e9b4d9 and 95f835d3d onto 2222fb3f0\",[],{\"optimisticSeconds\":900,\"likelySeconds\":1800,\"pessimisticSeconds\":3300,\"confidence\":\"low\",\"basis\":\"2 cherry-picks onto 2222fb3f0 that may conflict with the pipe lane's yard reroute (dataCenterFacilityYardCoolingHeaders.ts); npm ci ~2 min, tsc+lint ~3 min, trunk + footprint vitest ~2 min, possible conflict resolution\",\"updatedAt\":1794027266063}],[\"Gates on 2222fb3f0: lint, precommit, build\",[],{\"optimisticSeconds\":600,\"likelySeconds\":1200,\"pessimisticSeconds\":2400,\"confidence\":\"medium\",\"basis\":\"worktree+npm ci ~2 min, lint ~3 min, test:precommit ~8 min, build ~2 min; gate-runner median 5.6 p75 15\",\"updatedAt\":1794028262801}],[\"Push 2222fb3f0 to PR 114, update description, pipeline green\",[],{\"optimisticSeconds\":1500,\"likelySeconds\":2700,\"pessimisticSeconds\":3600,\"confidence\":\"low\",\"basis\":\"5 red CI keys: worktree+npm ci 4 min, last-pass search per key 10 min, fixes 10-15 min, full CI vitest step locally ~12 min, then push + pipeline ~15 min\",\"updatedAt\":1794033959736}]]],[\"Adaptive levels\",[[\"Levels never refused: layout grows to fit counts\",[],{\"optimisticSeconds\":480,\"likelySeconds\":700,\"pessimisticSeconds\":1500,\"confidence\":\"medium\",\"basis\":\"AdaptiveLand-2 receipt: 2 git checks, grep, 1 vitest file (~1 min), read 2 screenshots; PRD clause check may surface an edit\",\"updatedAt\":1794025012871}]]]]"
+      },
+      "id": "be8986e5",
+      "parentId": "39e09715",
+      "timestamp": "2026-11-07T07:12:07.901Z",
+      "runtime": {
+        "version": "18.17.0"
+      }
+    },
+    {
+      "type": "custom",
+      "customType": "user_todo_edit",
+      "data": {
+        "phases": [
+          {
+            "name": "Follow-ups",
+            "tasks": [
+              {
+                "content": "Guide Hall rack model step: readable layout",
+                "status": "completed"
+              },
+              {
+                "content": "Facility 2D: too much empty space around site",
+                "status": "completed"
+              },
+              {
+                "content": "Callouts during rotation match settled layout",
+                "status": "completed"
+              },
+              {
+                "content": "Main deploy pipeline: restore lost deploy script",
+                "status": "completed"
+              },
+              {
+                "content": "Plan click opens same panel as left list, abbreviations expanded",
+                "status": "completed"
+              },
+              {
+                "content": "Camera stays above ground, orbit pivot at viewport centre",
+                "status": "completed"
+              },
+              {
+                "content": "Generated UX transition graph with dead ends and wrong returns",
+                "status": "completed"
+              },
+              {
+                "content": "Use grid: row opens explainer panel, small inline toggle",
+                "status": "completed"
+              },
+              {
+                "content": "Facility decisions list: 8 pre-existing e2e failures",
+                "status": "completed"
+              },
+              {
+                "content": "Collateral for \"Integrate finished lanes onto consolidated branch\": The Power group header carries a three-line sentence \"Required: 1.07\u20131.11 MW \u00b7 Supplied: 2 MW \u00b7 Surplus: 0.89\u20130.93 MW\" that wraps between \"Supplied:\" and \"2 MW\", separating the label from its value",
+                "status": "abandoned"
+              },
+              {
+                "content": "Power source rows: remove red selection frame and grey boxes",
+                "status": "completed"
+              },
+              {
+                "content": "Power source rows: title size and indent match sibling rows",
+                "status": "completed"
+              },
+              {
+                "content": "Fix 4 new Facility e2e failures from helper gate",
+                "status": "abandoned"
+              },
+              {
+                "content": "Mac call: attribute 30 fps drop untraced",
+                "status": "completed"
+              },
+              {
+                "content": "PR 112: rebase onto main after PR 111 merge and fix",
+                "status": "abandoned"
+              },
+              {
+                "content": "Power source rows: no red keyboard-focus frame",
+                "status": "completed"
+              },
+              {
+                "content": "UX graph: no other-package or runtime-only concrete edges",
+                "status": "completed"
+              },
+              {
+                "content": "Mau standup transcript into plans, requirements, knowledgebase",
+                "status": "completed"
+              },
+              {
+                "content": "Facility orbit paints 30 fps: labels stop blocking frames",
+                "status": "abandoned"
+              },
+              {
+                "content": "Facility labels after rotation: leaders cross the building",
+                "status": "abandoned"
+              },
+              {
+                "content": "Diagnose leader crossings after Facility rotation",
+                "status": "completed"
+              },
+              {
+                "content": "Land focus, UX graph, standup patches on PR 112",
+                "status": "abandoned"
+              },
+              {
+                "content": "UX graph: tab transitions and conflict Back modeled",
+                "status": "completed"
+              },
+              {
+                "content": "Split PR 112: docs-only, code into follow-up PR",
+                "status": "completed"
+              },
+              {
+                "content": "Orbit fps measured on Darafei's Mac during a call",
+                "status": "abandoned",
+                "blocker": "Needs Darafei's hands: run mac-probe.js on his Mac during a WebRTC call; no agent route to his Mac"
+              },
+              {
+                "content": "Collateral for \"Facility labels after rotation: leaders cross the building\": At 430px, the two generator leader lines run behind the \u201cService room left rear\u201d plaque, making their ownership ambiguous.",
+                "status": "in_progress",
+                "schedule": {
+                  "dependencies": [],
+                  "cumulativeReestimateCount": 3,
+                  "owner": "LeadersOrbitOnly-2",
+                  "reestimateCount": 0,
+                  "resources": [
+                    "/home/kom/proj/sunbim/wt/LeadersBehindPlaque",
+                    "/home/kom/proj/sunbim/evidence/leaders-priority"
+                  ],
+                  "estimate": {
+                    "optimisticSeconds": 1800,
+                    "likelySeconds": 3000,
+                    "pessimisticSeconds": 3600,
+                    "confidence": "low",
+                    "basis": "Approach change: repair pass instead of finer sampling. Branch and cherry-pick 3 min, solver plus unit case 15-25 min, precommit 6 min, build 1.5 min, label spec on candidate and base 2x4 min (measured 243 s) under lock, screenshots 3 min; coder-strong p75 17 min plus gates",
+                    "updatedAt": 1794046994006
+                  },
+                  "startedAt": 1794044670129,
+                  "executor": {
+                    "workerId": "LeadersOrbitOnly-2",
+                    "agentProfile": "coder-strong",
+                    "resolvedModel": "codex-lb/gpt-6-astra",
+                    "thinkingLevel": "high",
+                    "startedAt": 1794050716204,
+                    "finishedAt": 1794051360854,
+                    "outcome": "aborted"
+                  },
+                  "audit": {
+                    "delivery": "[\"LeadersPriorityEvict-2\",1794048335911,1794049011070]",
+                    "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+                    "head": "541b724e9beef66f868d83a87f7049ddc126fb41",
+                    "startedAt": 1794049282696,
+                    "verdict": "pending",
+                    "agent": "qa-auditor",
+                    "attempts": 2,
+                    "evidence": "14:34 On 541b724e9 the hard rule alone (abf8f80a8) clears foreign crossings at 430 by omitting plaques; the remaining defect is both generator plaques hidden. The new two-long-leader unit test is red. The worker adds a both-generators-visible assertion to the oracle before the repair.",
+                    "workerId": "WholeJaguar"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Review redo 19:11",
+            "tasks": [
+              {
+                "content": "Abbreviation expansions on every node, sorted",
+                "status": "completed"
+              }
+            ]
+          },
+          {
+            "name": "Do items build",
+            "tasks": [
+              {
+                "content": "Integrate finished lanes onto consolidated branch",
+                "status": "abandoned"
+              }
+            ]
+          },
+          {
+            "name": "Maksim call 06-11",
+            "tasks": [
+              {
+                "content": "Maksim: Building layout broken, model incomplete",
+                "status": "completed"
+              },
+              {
+                "content": "Maksim: pipes stick out of the building",
+                "status": "completed"
+              },
+              {
+                "content": "Maksim: showcase scenario that demos cleanly on new UI",
+                "status": "completed"
+              },
+              {
+                "content": "60 MW preset adaptive 3 levels: generators through walls",
+                "status": "completed"
+              },
+              {
+                "content": "Plant on roof: checkbox like other boolean rows",
+                "status": "completed"
+              },
+              {
+                "content": "Cooling pipes: consolidated realistic trunks, warm and cold both shown",
+                "status": "pending",
+                "schedule": {
+                  "dependencies": [],
+                  "owner": "CoolingTrunksJourney-16",
+                  "reestimateCount": 0,
+                  "estimate": {
+                    "optimisticSeconds": 1800,
+                    "likelySeconds": 2700,
+                    "pessimisticSeconds": 3600,
+                    "confidence": "low",
+                    "basis": "Rebase 20 commits 5 min, tsc/lint/precommit/build 10 min, 40 browser tests candidate+base serially under lock ~2x8 min, new-key fixes 5-15 min, 2 Heat captures 3 min",
+                    "updatedAt": 1794046994006
+                  },
+                  "executor": {
+                    "workerId": "CoolingTrunksJourney-16",
+                    "agentProfile": "task",
+                    "resolvedModel": "codex-lb/gpt-6.1-terra",
+                    "thinkingLevel": "medium",
+                    "startedAt": 1794050256309,
+                    "finishedAt": 1794051113577,
+                    "outcome": "completed"
+                  },
+                  "audit": {
+                    "delivery": "[\"CoolingTrunksJourney-16\",1794050256309,1794051113577]",
+                    "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+                    "head": "1d3f6bcc96613c8a3a920141018a45dbb970729c",
+                    "startedAt": 1794051157513,
+                    "verdict": "pending",
+                    "agent": "qa-auditor",
+                    "attempts": 1,
+                    "evidence": "requirement_violation: At HEAD 541b724e9beef66f868d83a87f7049ddc126fb41, src/packages/datacenter/facilityScene/dataCenterFacilitySceneConnections.ts:1984-2025 groups trunks by network and plant ID and emits one common-prefix trunk per group. Its radius is clamp(0.06 \u00d7 sqrt(connection count), 0.115, 0.35), not a function of thermal duty. The reference implementation repeats this at dataCenterMaksimReferenceScene.ts:1078-1106. Thus header-row count does not determine the number of mains, and changing served duty without changing logical connection count cannot change their width. doc/product-requirements.md:216-223 instead requires one pair per duty-unit row per independent train and radius proportional to sqrt(served duty). The matching sizeDataCenterCoolingTrunksV1 function exists at dataCenterFacilityEquipmentSizing.ts:283-299, but the repository search found callers only in coolingTrunkSizing.test.ts:2-11; neither scene implementation uses it.\ncollateral_defect: src/__tests__/coolingTrunkOracle.ts:25 drops each entire connection that has carrierRouteIds. However, src/product/facility/facilityScene.ts:8644-8657 removes only its shared carrier prefix and still renders its downstream branch. Consequently the consolidated geometry oracle omits those rendered branches from route counts, lengths and crossing checks. Additionally, coolingTrunkOracle.ts:46,60 measures outside-shell distance only for a rectangular boundary named reference-building; adaptive polygon shells are not measured, so their outsideShellMetres remains zero regardless of exterior route geometry. coolingTrunks.test.ts:11-23 then asserts these incomplete measurements and never enforces the documented trunk-derived polyline bound. This leaves the adaptive-layout and complete-route acceptance obligations in doc/product-requirements.md:225-230 unenforced by this oracle.",
+                    "workerId": "DecentBadger"
+                  },
+                  "resources": [
+                    "/home/kom/proj/sunbim/wt/CoolingMainsPr114",
+                    "/home/kom/proj/sunbim/wt/CoolingMainsPr114/src/__tests__/coolingTrunkOracle.ts",
+                    "/home/kom/proj/sunbim/wt/CoolingMainsPr114/src/__tests__/coolingTrunks.test.ts",
+                    "/home/kom/proj/sunbim/wt/CoolingMainsPr114/src/__tests__/coolingTrunkSizing.test.ts",
+                    "/home/kom/proj/sunbim/wt/CoolingMainsPr114/src/packages/datacenter/facilityScene",
+                    "/home/kom/proj/sunbim/wt/CoolingBase1e7",
+                    "/home/kom/proj/sunbim/evidence/cooling-rebase-0e2b69a1"
+                  ],
+                  "startedAt": 1794027323334,
+                  "cumulativeReestimateCount": 9
+                }
+              },
+              {
+                "content": "60 MW Adaptive L3 restored state: blank 3D canvas",
+                "status": "abandoned"
+              },
+              {
+                "content": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.",
+                "status": "completed"
+              },
+              {
+                "content": "Collateral for \"60 MW preset adaptive 3 levels: generators through walls\": New Reference building and transfer-switchgear callouts are clipped at the right viewport edge; a coolant-distribution callout is obscured by the zoom controls. The base also clips a CRAH callout, but the new labels remain unreadable.",
+                "status": "abandoned"
+              },
+              {
+                "content": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the building extends beyond the narrow viewport, leaving only part of the floor visible and communication pipes covering much of the rack area. Before, the whole building footprint was visible.",
+                "status": "completed"
+              },
+              {
+                "content": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor",
+                "status": "completed"
+              },
+              {
+                "content": "Pipe footprint goldens: 4 adaptive callout snapshots differ",
+                "status": "abandoned"
+              },
+              {
+                "content": "Levels that cannot fit show as conflict/risk, not silent revert",
+                "status": "abandoned"
+              },
+              {
+                "content": "Levelled plan builds with any power, cooling and room-cooling choice",
+                "status": "completed"
+              },
+              {
+                "content": "Land cooling commits 530e9b4d9 and 95f835d3d onto 2222fb3f0",
+                "status": "abandoned"
+              },
+              {
+                "content": "Gates on 2222fb3f0: lint, precommit, build",
+                "status": "completed"
+              },
+              {
+                "content": "Push 2222fb3f0 to PR 114, update description, pipeline green",
+                "status": "abandoned"
+              },
+              {
+                "content": "E2E: AI Project overhead Levels 2 draws overhead units on Level 2",
+                "status": "completed"
+              },
+              {
+                "content": "PR 114: pipeline green at 196909750",
+                "status": "in_progress",
+                "schedule": {
+                  "dependencies": [],
+                  "cumulativeReestimateCount": 4,
+                  "owner": "Pr114PipelineWatch-7",
+                  "reestimateCount": 0,
+                  "resources": [
+                    "/home/kom/proj/sunbim/evidence/cae9987d0"
+                  ],
+                  "estimate": {
+                    "optimisticSeconds": 1700,
+                    "likelySeconds": 1900,
+                    "pessimisticSeconds": 2400,
+                    "confidence": "high",
+                    "basis": "Measured pipelines: 30-33 min (#1339-#1341)",
+                    "updatedAt": 1794049386374
+                  },
+                  "startedAt": 1794038136632,
+                  "executor": {
+                    "workerId": "Pr114PipelineWatch-7",
+                    "agentProfile": "git-pr-owner",
+                    "resolvedModel": "codex-lb/gpt-6.1-terra",
+                    "thinkingLevel": "low",
+                    "startedAt": 1794050716181,
+                    "finishedAt": 1794051360845,
+                    "outcome": "aborted"
+                  },
+                  "audit": {
+                    "delivery": "[\"Pr114PipelineWatch-5\",1794048315909,1794048801007]",
+                    "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+                    "head": "196909750cfbaa865f11f508442a4d1f60263b1e",
+                    "startedAt": 1794049334535,
+                    "verdict": "pending",
+                    "agent": "qa-auditor",
+                    "attempts": 1,
+                    "evidence": "14:33 #1339 (1e7f18d59) and #1340 (709d2ce28) SUCCESSFUL (auditor HurtViper pass). 541b724e9 pushed 14:13; Pr114PipelineWatch-4 is watching its pipeline (measured 32-33 min).",
+                    "workerId": "UgliestTiger"
+                  }
+                }
+              },
+              {
+                "content": "PR 114 description names cae9987d0 internal fixes",
+                "status": "completed"
+              },
+              {
+                "content": "3D material comparison keeps camera across layout refit",
+                "status": "completed"
+              },
+              {
+                "content": "Levels: real infeasibility shown as conflict, model artefacts never block",
+                "status": "completed"
+              },
+              {
+                "content": "AGENTS: host browser lock, same-worker gate classification",
+                "status": "abandoned"
+              }
+            ]
+          },
+          {
+            "name": "Adaptive levels",
+            "tasks": [
+              {
+                "content": "Levels never refused: layout grows to fit counts",
+                "status": "completed"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

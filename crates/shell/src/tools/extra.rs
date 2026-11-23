@@ -189,7 +189,7 @@ impl Extra {
 						(id, label)
 					});
 					let label = own.map_or(self.child.label, |(_, label)| label);
-					let lineage = Lineage { label, detached: false };
+					let lineage = Lineage { label, detached: false, ..Lineage::default() };
 					let id =
 						api.run_subshell_in(script(*command, &program, &running.env_names), lineage);
 					self.runs.push(Run { id, reply, own });

@@ -1042,9 +1042,19 @@ function isParallel(span: Span): boolean {
  * (even across awaits) becomes that span's child. Parallel children are recorded as siblings
  * with overlapping intervals.
  */
+/** Optional scoped timing observer, independent of the startup timing window. */
+let timingObserver: (<T>(name: string, fn: () => T) => T) | undefined;
+export function setTimingObserver(observer: <T>(name: string, fn: () => T) => T): void {
+	timingObserver = observer;
+}
+
 export function time(op: string): void;
 export function time<T, A extends unknown[]>(op: string, fn: (...args: A) => T, ...args: A): T;
 export function time<T, A extends unknown[]>(op: string, fn?: (...args: A) => T, ...args: A): T | undefined {
+	if (fn !== undefined && timingObserver) return timingObserver(op, () => timeImpl(op, fn, ...args));
+	return timeImpl(op, fn, ...args);
+}
+function timeImpl<T, A extends unknown[]>(op: string, fn?: (...args: A) => T, ...args: A): T | undefined {
 	const recording = gRecordTimings && gRootSpan !== undefined;
 
 	if (fn === undefined) {

@@ -152,6 +152,7 @@ describe("SessionMaintenance.contextFitsModel", () => {
 		const keptId = sessionManager.appendMessage(codexTurn("Compacted answer.", 1));
 		const compactionItem = { type: "compaction", encrypted_content: "native-state" };
 		sessionManager.appendCompaction("Remote compaction placeholder", undefined, keptId, 4_000, {
+			method: "remote",
 			preserveData: {
 				openaiRemoteCompaction: { provider: active.provider, replacementHistory: [compactionItem], compactionItem },
 			},
@@ -174,6 +175,7 @@ describe("SessionMaintenance.contextFitsModel", () => {
 		const keptId = sessionManager.appendMessage({ role: "user", content: "And then?", timestamp: 6 });
 		const compactionItem = { type: "compaction", encrypted_content: "native-state" };
 		sessionManager.appendCompaction("Remote compaction placeholder", undefined, keptId, 4_000, {
+			method: "remote",
 			preserveData: {
 				openaiRemoteCompaction: { provider: active.provider, replacementHistory: [compactionItem], compactionItem },
 			},

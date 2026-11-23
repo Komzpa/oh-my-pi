@@ -1,0 +1,9 @@
+{
+  "source": "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221.jsonl",
+  "copy": "/home/kom/proj/ai_pr/omp-criticlive-20261107/evidence/dc-source.jsonl",
+  "copyCommand": "cp --reflink=auto SOURCE ../evidence/dc-source.jsonl",
+  "bytes": 2564978964,
+  "sha256": "d901999e9299648edb410039f9925c1e7913191d129791c0144b2208a0bf9aee",
+  "snapshotAtLocal": "2026-11-07 13:25 +04:00",
+  "note": "Copied after the initial saved lane snapshot; six open rows remained. Content stays private; probes mutate only dc.jsonl or its lane-owned continuation."
+}

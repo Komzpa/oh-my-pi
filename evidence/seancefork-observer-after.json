@@ -1,0 +1,27 @@
+{
+  "mode": "after",
+  "file": "../repro/after-child.jsonl",
+  "observations": [
+    {
+      "turn": 0,
+      "wallMs": 9476.938606,
+      "maxIntervalMs": 46.61885400000028,
+      "rcharBytes": 3716002018,
+      "at": 1794087706843
+    },
+    {
+      "turn": 1,
+      "wallMs": 0.32244600000012724,
+      "maxIntervalMs": 10.064392000000225,
+      "rcharBytes": 276,
+      "at": 1794087706843
+    },
+    {
+      "turn": 2,
+      "wallMs": 0.2209180000008928,
+      "maxIntervalMs": 10.062732000000324,
+      "rcharBytes": 276,
+      "at": 1794087706843
+    }
+  ]
+}

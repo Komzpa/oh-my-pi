@@ -1,0 +1,142 @@
+{
+	"requirements": [
+		{
+			"id": "R1",
+			"at": "2026-10-31T13:18:53.316Z",
+			"rawText": "let's start a new branch.",
+			"classification": "linked",
+			"rows": ["Create branch datacenter-2026-10-31 from origin/main"],
+			"rowVerdicts": {
+				"Create branch datacenter-2026-10-31 from origin/main": {
+					"status": "unverifiable",
+					"evidence": "Previously passing receipt is stale; request a fresh audit.",
+					"artifact": "row \"Create branch datacenter-2026-10-31 from origin/main\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@9580830853100bdc6281acc0d9a3b731c50098a7",
+					"workerId": "AuditBranchExists",
+					"auditor": "qa-auditor",
+					"rawWords": "let's start a new branch.",
+					"receivedAt": "2026-11-01T19:31:47.044Z",
+					"sourceSnapshot": "[{\"id\":\"R1\",\"at\":\"2026-10-31T13:18:53.316Z\",\"rawText\":\"let's start a new branch.\"},{\"id\":\"R2\",\"at\":\"2026-10-31T13:21:14.404Z\",\"rawText\":\"Answer to toolu_01KktJ6wb2d1XHTVfkSSJcTZ [scope]: Something else — note: just call it datacenter-2026-10-31 and let's go from there.\"}]"
+				}
+			}
+		},
+		{
+			"id": "R203",
+			"at": "2026-11-05T08:21:54.983Z",
+			"rawText": "fix CI urgently",
+			"classification": "linked",
+			"rows": ["Main deploy pipeline: restore lost deploy script"]
+		},
+		{
+			"id": "R2",
+			"at": "2026-10-31T13:21:14.404Z",
+			"rawText": "Answer to toolu_01KktJ6wb2d1XHTVfkSSJcTZ [scope]: Something else — note: just call it datacenter-2026-10-31 and let's go from there.",
+			"classification": "merged",
+			"rows": [],
+			"mergeInto": "R1"
+		}
+	],
+	"phases": [
+		{
+			"name": "Historical",
+			"tasks": [
+				{
+					"content": "Create branch datacenter-2026-10-31 from origin/main",
+					"status": "completed",
+					"artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+					"artifactOwner": "AuditBranchClean8ccc",
+					"schedule": {
+						"startedAt": 1793561455799,
+						"firstRequirementAt": 1793452874439,
+						"dependencies": [],
+						"owner": "AuditBranchExists",
+						"reestimateCount": 0,
+						"estimateRevision": 5,
+						"estimate": {
+							"optimisticSeconds": 122,
+							"likelySeconds": 180,
+							"pessimisticSeconds": 400,
+							"confidence": "medium",
+							"basis": "Measured floor p50 3m; branch existence is one ls-remote readback",
+							"updatedAt": 1793561477556
+						},
+						"executor": {
+							"workerId": "AuditBranchExists",
+							"agentProfile": "qa-auditor",
+							"resolvedModel": "codex-lb/gpt-6-luna",
+							"thinkingLevel": "medium",
+							"startedAt": 1793561493827,
+							"finishedAt": 1793561502265,
+							"outcome": "completed"
+						},
+						"progress": {
+							"at": 1793561477556,
+							"evidence": "omp restarted 23:30; origin datacenter-2026-10-31=958083085 readback"
+						},
+						"resources": ["/home/kom/proj/sunbim/datacenter-decision-graph"],
+						"finishedAt": 1793561508809
+					}
+				},
+				{
+					"content": "Main deploy pipeline: restore lost deploy script",
+					"status": "completed",
+					"artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+					"artifactOwner": "main",
+					"schedule": {
+						"firstRequirementAt": 1793866675834,
+						"previewTracked": true,
+						"previewPending": true,
+						"previewIdentityMissing": true,
+						"previewPartial": false,
+						"dependencies": [],
+						"owner": "AuditDeploy",
+						"reestimateCount": 1,
+						"resources": ["/home/kom/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix"],
+						"estimateRevision": 5,
+						"estimate": {
+							"optimisticSeconds": 280,
+							"likelySeconds": 700,
+							"pessimisticSeconds": 1300,
+							"confidence": "medium",
+							"basis": "accepted; re-audit only",
+							"updatedAt": 1793906671189
+						},
+						"progress": {
+							"at": 1793919591177,
+							"evidence": "Darafei accepted on the review page; re-applying under the new closing rule"
+						},
+						"executor": {
+							"workerId": "AuditDeploy",
+							"agentProfile": "qa-auditor",
+							"resolvedModel": "anthropic/claude-opus-5-5",
+							"thinkingLevel": "medium",
+							"startedAt": 1793870178406,
+							"finishedAt": 1793870279931,
+							"outcome": "completed"
+						},
+						"attemptHistory": [
+							{
+								"attemptId": "qa-auditor-6:1793867586738",
+								"workerName": "qa-auditor-6",
+								"resolvedModel": "abliteration/abliterated-model",
+								"effort": "medium",
+								"startedAt": 1793867586738,
+								"finishedAt": 1793867589049,
+								"durationMs": 28545,
+								"terminalStatus": "failed",
+								"deliverablePaths": [
+									"/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/qa-auditor-6.md"
+								],
+								"infraFailureError": "provider unavailable (entitlement)",
+								"infraFailureLine": "attempt 1 failed: provider unavailable (entitlement)"
+							}
+						],
+						"review": "accepted",
+						"reviewPagePending": true,
+						"acceptedAuditFollowUp": "Restore or bind the artifact for R199 (+3 more below); then retry done.\nClassify first: todo with op=\"classify\", id=\"R234\", classification=\"linked\", rows=[\"<exact todo row>\"] (no todo row exists yet: first create one with todo op=\"append\", items=[\"<exact todo row>\"] (or op=\"init\"), then retry the classify call; or classification=\"not-a-requirement\" with reason=\"<why this is not a requirement>\"). Linked requirements need a fresh qa-auditor pass bound to each row artifact: R199 (\"Main deploy pipeline: restore lost deploy script\"): R199 freshness check failed: row \"Main deploy pipeline: restore lost deploy script\": unresolved artifact (current identity unavailable (/home/kom/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix: cannot resolve canonical path (missing))); resolved checkout: cwd=~/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix, head=unknown, dirty=false, reason=current identity unavailable (/home/kom/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix: cannot resolve canonical path (missing)); rejected receipt: R199: rejected collateral section: missing collateral pair; retry with existing before/after files; R203: rejected collateral section: missing collateral pair; retry with existing before/after files; R205: rejected collateral section: missing collateral pair; retry with existing before/after files; R203 (\"Main deploy pipeline: restore lost deploy script\"): R203 freshness check failed: row \"Main deploy pipeline: restore lost deploy script\": unresolved artifact (current identity unavailable (/home/kom/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix: cannot resolve canonical path (missing))); resolved checkout: cwd=~/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix, head=unknown, dirty=false, reason=current identity unavailable (/home/kom/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix: cannot resolve canonical path (missing)); rejected receipt: R199: rejected collateral section: missing collateral pair; retry with existing before/after files; R203: rejected collateral section: missing collateral pair; retry with existing before/after files; R205: rejected collateral section: missing collateral pair; retry with existing before/after files; R205 (\"Main deploy pipeline: restore lost deploy script\"): R205 freshness check failed: row \"Main deploy pipeline: restore lost deploy script\": unresolved artifact (current identity unavailable (/home/kom/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix: cannot resolve canonical path (missing))); resolved checkout: cwd=~/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix, head=unknown, dirty=false, reason=current identity unavailable (/home/kom/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix: cannot resolve canonical path (missing)); rejected receipt: R199: rejected collateral section: missing collateral pair; retry with existing before/after files; R203: rejected collateral section: missing collateral pair; retry with existing before/after files; R205: rejected collateral section: missing collateral pair; retry with existing before/after files; R234 awaits todo classify. Request one fresh audit per row: agent=\"qa-auditor\", requirementIds=[\"R199\",\"R203\",\"R205\"], task=\"Audit exact requirement IDs R199, R203, R205 for TODO row \\\"Main deploy pipeline: restore lost deploy script\\\" at its current artifact (row \\\"Main deploy pipeline: restore lost deploy script\\\": head=unknown, cwd=~/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix, dirty=false, reason=current identity unavailable (/home/kom/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix: cannot resolve canonical path (missing))). Return one table row per exact ID; do not append letter suffixes.\". Then retry todo with op=\"done\", task=\"Main deploy pipeline: restore lost deploy script\" (or op=\"done\", items=[\"<row1>\", ...]).",
+						"finishedAt": 1793919591177
+					}
+				}
+			]
+		}
+	]
+}

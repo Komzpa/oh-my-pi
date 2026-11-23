@@ -181,7 +181,12 @@ function resolveCollision(
 		.filter(([_, e]) => e.body === candidateBody && Bun.deepEquals(e.frontmatter, candidateFrontmatter))
 		.map(([name]) => name);
 
-	if (bareSkill && ((bareInstalled && !candidateInstalled) || (candidateCustom && !bareCustom))) {
+	// Project-authored stakeholder and other skills override extension defaults.
+	const projectOverride =
+		candidate._source?.provider === "agents" &&
+		candidate._source.level === "project" &&
+		bareSkill?._source?.provider === "omp-plugins";
+	if (bareSkill && ((bareInstalled && !candidateInstalled) || (candidateCustom && !bareCustom) || projectOverride)) {
 		if (identical.includes(candidate.name)) return { name: candidate.name, dropped: identical };
 		const bareEntry = admitted.get(candidate.name)!;
 		let namespacedBare = `${bareEntry.namespace}/${bareEntry.rawName}`;
@@ -664,6 +669,7 @@ export interface SkillRediscoveryHost {
  * is read. A caller that cannot describe one (an embedder's partial session) reads the path it holds.
  */
 export interface SkillRediscoverySource {
+	recordInstructionFile?: (path: string, body?: string) => Promise<void>;
 	skillRediscoveryHost?(): SkillRediscoveryHost;
 }
 
@@ -865,8 +871,12 @@ export type SkillInvocationKind = "user" | "autoload";
 export type SkillPromptInput = Pick<ParsedSkillInvocation, "args"> & Partial<Pick<ParsedSkillInvocation, "prompt">>;
 
 /** Read a skill's instruction body before rendering user-provided arguments. */
-export async function loadSkillPromptBody(skill: Pick<Skill, "filePath" | "pluginRoot">): Promise<string> {
+export async function loadSkillPromptBody(
+	skill: Pick<Skill, "filePath" | "pluginRoot">,
+	source?: SkillRediscoverySource,
+): Promise<string> {
 	const content = await Bun.file(skill.filePath).text();
+	await source?.recordInstructionFile?.(skill.filePath, content);
 	// Only the body is used: keep HTML comments (`repair: false`) and leave YAML
 	// diagnostics to the loader, which already parsed this frontmatter.
 	let body = parseFrontmatter(content, { source: skill.filePath, repair: false, level: "off" }).body.trim();
@@ -903,12 +913,12 @@ export async function loadSkillPrompt(
 		skill = current;
 	}
 	try {
-		return { skill, body: await loadSkillPromptBody(skill) };
+		return { skill, body: await loadSkillPromptBody(skill, source) };
 	} catch (error) {
 		if (!host || !isEnoent(error)) throw error;
 		const fresh = await findRediscoveredSkill(skill, host);
 		if (!fresh || fresh.filePath === skill.filePath) throw error;
-		return { skill: fresh, body: await loadSkillPromptBody(fresh) };
+		return { skill: fresh, body: await loadSkillPromptBody(fresh, source) };
 	}
 }
 

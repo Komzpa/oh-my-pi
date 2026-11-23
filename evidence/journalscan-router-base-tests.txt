@@ -1,0 +1,46 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/todo_calibration.io.test.ts:
+21 |   const fullReads = spyOn(fs, "readFileSync");
+22 |   try {
+23 |     const append = `${outcome("б")}\n`;
+24 |     fs.appendFileSync(journal, append);
+25 |     expect(readDurationHistory(journal).samples.map(sample => sample.spawnKey)).toEqual(["a", "б"]);
+26 |     expect(fullReads.mock.calls).toHaveLength(0);
+                                      ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 0
+Received length: 1
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-journalscan-20261107/journal-work/packages/reemxy-extensions/extensions/todo_calibration.io.test.ts:26:34)
+(fail) appending an outcome reads only appended bytes and retains prior calibration [0.81ms]
+37 | test("partial outcomes are deferred, replacements and truncation discard obsolete history", () => {
+38 |   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "calibration-io-"));
+39 |   dirs.push(dir);
+40 |   const journal = path.join(dir, "spawns.jsonl");
+41 |   fs.writeFileSync(journal, outcome("partial"));
+42 |   expect(readDurationHistory(journal).samples).toEqual([]);
+                                                    ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   {
++     "model": undefined,
++     "role": "coder",
++     "seconds": 3,
++     "spawnKey": "partial",
++   },
++ ]
+
+- Expected  - 1
++ Received  + 8
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-journalscan-20261107/journal-work/packages/reemxy-extensions/extensions/todo_calibration.io.test.ts:42:48)
+(fail) partial outcomes are deferred, replacements and truncation discard obsolete history [0.30ms]
+
+ 0 pass
+ 2 fail
+ 4 expect() calls
+Ran 2 tests across 1 file. [594.00ms]

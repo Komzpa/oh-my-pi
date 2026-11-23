@@ -13,6 +13,7 @@ import { integrationsThreadService } from "./integrations";
 import { loggerThreadService } from "./logging";
 import { lspThreadService } from "./lsp";
 import { memoryThreadService } from "./memory";
+import { providerConcurrencyThreadService } from "./provider-concurrency";
 import { runtimeThreadService } from "./runtime";
 import { runtimeIdentityThreadService } from "./runtime-identity";
 import { settingsThreadService } from "./settings";
@@ -24,6 +25,7 @@ export const THREAD_SERVICES: readonly ThreadService[] = [
 	loggerThreadService,
 	runtimeIdentityThreadService,
 	settingsThreadService,
+	providerConcurrencyThreadService,
 	authService,
 	agentsThreadService,
 	lspThreadService,

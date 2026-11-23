@@ -336,6 +336,30 @@ describe("Cursor server records", () => {
 		expect(assistant.providerPayload).toEqual(k3Payload);
 	});
 
+	it("replays captured server records after the elapsed note refreshes", async () => {
+		const note: Message = {
+			role: "developer",
+			synthetic: true,
+			timestamp: 4,
+			content:
+				"elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+		};
+		const { assistant, toolResult } = await recordK3Turn([firstUser, note]);
+		const { ids } = await rootPromptIds(model("kimi-k3"), [
+			firstUser,
+			assistant,
+			toolResult,
+			secondUser,
+			{
+				...note,
+				content:
+					"elapsed 9s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+			},
+		]);
+		expect(assistant.stopReason).toBe("stop");
+		expect(ids.slice(2)).toEqual(SPAN_IDS);
+	});
+
 	it("sends a resumed turn back as those records, and the server reads the same bytes", async () => {
 		const { assistant, toolResult } = await recordK3Turn();
 		let root: string[] = [];

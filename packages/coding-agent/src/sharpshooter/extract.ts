@@ -173,8 +173,8 @@ export async function resolveSharpshooterModel(
 	const offline = cfgOffline.get(settings);
 	if (offline && !provider) return undefined;
 	const models = offline
-		? modelRegistry.getAll().filter(model => model.provider === provider)
-		: modelRegistry.getAll();
+		? modelRegistry.getAvailable().filter(model => model.provider === provider)
+		: modelRegistry.getAvailable();
 	const selector = cfgSharpshooterModel.get(settings);
 	if (selector) {
 		const resolved = resolveModelRoleValue(selector, models, {

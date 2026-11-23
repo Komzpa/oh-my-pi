@@ -1407,8 +1407,8 @@ async function resolveMemoryModel(options: {
 	const provider = session.model?.provider;
 	if (cfgOffline.get(session.settings) && !provider) return undefined;
 	const models = cfgOffline.get(session.settings)
-		? modelRegistry.getAll().filter(model => model.provider === provider)
-		: modelRegistry.getAll();
+		? modelRegistry.getAvailable().filter(model => model.provider === provider)
+		: modelRegistry.getAvailable();
 	const requestedModel = session.settings.getModelRole(fallbackRole) || session.settings.getModelRole("default");
 	if (requestedModel) {
 		const resolved = resolveModelRoleValue(requestedModel, models, {
@@ -1417,7 +1417,9 @@ async function resolveMemoryModel(options: {
 		});
 		if (resolved.model) return resolved.model;
 	}
-	return session.model ?? models[0];
+	return (
+		models.find(model => model.provider === session.model?.provider && model.id === session.model.id) ?? models[0]
+	);
 }
 
 function loadMemoryConfig(settings: Settings): MemoryRuntimeConfig {

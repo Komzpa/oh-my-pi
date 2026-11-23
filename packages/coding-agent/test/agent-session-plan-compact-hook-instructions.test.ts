@@ -129,11 +129,11 @@ describe("AgentSession plan-mode compaction hook contract (issue #4359)", () => 
 			},
 		);
 
-		// Minimal ExtensionRunner shim: AgentSession only calls hasHandlers() +
-		// emit() on it. Casting keeps the test focused on the hook payload.
+		// Minimal ExtensionRunner shim for compaction and publication hook discovery.
 		const beforeCompactEvents: SessionBeforeCompactEvent[] = [];
 		const extensionRunner = {
 			hasHandlers: (type: string) => type === "session_before_compact",
+			hasLoadedHandlers: (type: string) => type === "session_before_compact",
 			emit: async (event: { type: string } & Record<string, unknown>) => {
 				if (event.type === "session_before_compact") {
 					beforeCompactEvents.push(event as unknown as SessionBeforeCompactEvent);

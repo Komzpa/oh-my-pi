@@ -9,6 +9,7 @@
  * timeout.
  */
 import * as path from "node:path";
+import { ToolResourceScope } from "@oh-my-pi/pi-natives";
 import { $env, $flag, isBunTestRuntime, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../config/settings";
 import { registerOnBoard } from "../../daemon/client";
@@ -17,6 +18,8 @@ import {
 	getRemainingTimeMs,
 	type KernelExecuteOptions,
 	type KernelExecuteResult,
+	type KernelShutdownOptions,
+	type KernelShutdownResult,
 	type KernelStartOptions,
 } from "../kernel-base";
 import { type BackendProbeOptions, probeCandidates } from "../probe";
@@ -32,7 +35,9 @@ import {
 	resolvePythonRuntime,
 } from "./runtime";
 import { hostHasInheritableConsole, shouldDetachKernel, shouldHideKernelWindow } from "./spawn-options";
+import { ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
 import type { PythonToolRequest } from "./executor";
+import { toolSessionEnvironment } from "../../exec/session-slice";
 
 export type {
 	KernelExecuteOptions,
@@ -223,6 +228,20 @@ export interface PythonKernelStartOptions extends KernelStartOptions {
 
 export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 	#installedPreludes = new Map<string, PythonPreludeSource>();
+	#resourceScope: ToolResourceScope | null = null;
+
+	#closeResourceScope(): void {
+		this.#resourceScope?.close();
+		this.#resourceScope = null;
+	}
+
+	override async shutdown(options?: KernelShutdownOptions): Promise<KernelShutdownResult> {
+		try {
+			return await super.shutdown(options);
+		} finally {
+			this.#closeResourceScope();
+		}
+	}
 
 	/** @param pythonPath Interpreter executable this kernel runs on; reported as the runtime in eval state. */
 	private constructor(
@@ -349,9 +368,12 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 				? resolveExplicitPythonRuntime(options.interpreter, options.cwd, filterEnv(shellEnv))
 				: resolvePythonRuntime(options.cwd, filterEnv(shellEnv));
 		}
-		const spawnEnv: Record<string, string> = {};
+		let spawnEnv: Record<string, string> = {};
 		for (const [key, value] of Object.entries(runtime.env)) {
 			if (typeof value === "string") spawnEnv[key] = value;
+		}
+		if (options.maskDesktopSession) {
+			spawnEnv = stripDesktopSessionEnv(spawnEnv, ensureSubagentRuntimeDir(options.sessionId ?? Snowflake.next()));
 		}
 		for (const [key, value] of Object.entries(options.env ?? {})) {
 			if (typeof value === "string") spawnEnv[key] = value;
@@ -361,38 +383,47 @@ export class PythonKernel extends BaseKernel<PythonKernelExecuteOptions> {
 		// UTF-8 mode: text-mode subprocess pipes otherwise decode with the ANSI code page on
 		// Windows, and a decode error in CPython's pipe reader thread yields `stdout=None`.
 		spawnEnv.PYTHONUTF8 = "1";
+		spawnEnv = await toolSessionEnvironment(options.sessionId, spawnEnv);
 
 		const scriptPath = await stageRunnerScript("omp-python-runner", "py", RUNNER_SCRIPT);
 		const kernel = new PythonKernel(Snowflake.next(), runtime.pythonPath);
 
-		const proc = Bun.spawn([runtime.pythonPath, "-u", scriptPath], {
-			cwd: options.cwd,
-			detached: shouldDetachKernel(process.platform),
-			env: spawnEnv,
-			stdin: "pipe",
-			stdout: "pipe",
-			stderr: "pipe",
-			windowsHide: shouldHideKernelWindow({
-				platform: process.platform,
-				hostHasInheritableConsole: hostHasInheritableConsole(),
-			}),
-		});
-
-		kernel.setProcess(proc);
-		const board = registerOnBoard({
-			kind: "external",
-			scope: { kind: "session", id: options.sessionId || `process-${process.pid}` },
-			key: `python-eval:${proc.pid}`,
-			label: `python eval (${path.basename(runtime.pythonPath)})`,
-			pid: proc.pid,
-		});
-		// Exit covers every teardown path: shutdown, kill, and crashes.
-		void proc.exited.finally(() => board.dispose());
-
-		const startup = { signal: options.signal, deadlineMs: options.deadlineMs };
-		const startupBudget = Math.min(getRemainingTimeMs(startup.deadlineMs) ?? STARTUP_TIMEOUT_MS, STARTUP_TIMEOUT_MS);
-
 		try {
+			kernel.#resourceScope = new ToolResourceScope();
+			const proc = Bun.spawn(
+				await kernel.#resourceScope.wrapCommandAsync([runtime.pythonPath, "-u", scriptPath], spawnEnv),
+				{
+					cwd: options.cwd,
+					detached: shouldDetachKernel(process.platform),
+					env: spawnEnv,
+					stdin: "pipe",
+					stdout: "pipe",
+					stderr: "pipe",
+					windowsHide: shouldHideKernelWindow({
+						platform: process.platform,
+						hostHasInheritableConsole: hostHasInheritableConsole(),
+					}),
+				},
+			);
+
+			kernel.setProcess(proc);
+			void proc.exited.then(() => kernel.#closeResourceScope());
+			const board = registerOnBoard({
+				kind: "external",
+				scope: { kind: "session", id: options.sessionId || `process-${process.pid}` },
+				key: `python-eval:${proc.pid}`,
+				label: `python eval (${path.basename(runtime.pythonPath)})`,
+				pid: proc.pid,
+			});
+			// Exit covers every teardown path: shutdown, kill, and crashes.
+			void proc.exited.finally(() => board.dispose());
+
+			const startup = { signal: options.signal, deadlineMs: options.deadlineMs };
+			const startupBudget = Math.min(
+				getRemainingTimeMs(startup.deadlineMs) ?? STARTUP_TIMEOUT_MS,
+				STARTUP_TIMEOUT_MS,
+			);
+
 			const initScript = buildInitScript(options.cwd, options.env);
 			await kernel.executeWithBudget(initScript, startup.signal, startupBudget, "Python kernel init");
 			await kernel.executeWithBudget(PYTHON_PRELUDE, startup.signal, startupBudget, "Python kernel prelude");

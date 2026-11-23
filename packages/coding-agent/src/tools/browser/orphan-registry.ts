@@ -32,6 +32,7 @@ export interface SharedTargetScope {
 	projectDir: string;
 	/** Key of the browser's `proc` unit, e.g. `omp.browser.headless`. */
 	daemonName: string;
+	runtimeDir?: string;
 }
 
 /** On-disk ownership record: one file per owning omp process. */
@@ -65,7 +66,7 @@ const unclosedRetries = new Map<string, Promise<number>>();
 const writeChains = new Map<string, Promise<void>>();
 
 function registryDir(scope: SharedTargetScope): string {
-	return path.join(getDaemonRuntimeDir(scope.projectDir), `${scope.daemonName}.targets`);
+	return path.join(scope.runtimeDir ?? getDaemonRuntimeDir(scope.projectDir), `${scope.daemonName}.targets`);
 }
 
 /** Serialize a write against others for the same registry dir. */

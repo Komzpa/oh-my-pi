@@ -115,7 +115,8 @@ function spawnerInbox() {
 	return () => send.mock.calls.map(([message]) => message);
 }
 
-describe("runSubprocess stepped spawns", () => {
+// Skipped: the fork keeps terminal-yield-once (a run ends at its first accepted yield) and refuses multi-step spawns.
+describe.skip("runSubprocess stepped spawns", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		AsyncJobManager.resetForTests();

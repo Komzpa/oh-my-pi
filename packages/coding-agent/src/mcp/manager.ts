@@ -1,3 +1,4 @@
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * MCP Server Manager.
  *
@@ -260,6 +261,8 @@ export interface MCPManagerApi {
 	addToolsChangedListener(listener: () => void): () => void;
 	/** Subscribe to every server notification frame; returns an unsubscribe fn. */
 	addNotificationListener(listener: (serverName: string, method: string, params: unknown) => void): () => void;
+	/** Known server inventory, including pending and failed handshakes. */
+	getAllServerNames(): string[];
 	/** Names of currently connected servers. */
 	getConnectedServers(): string[];
 	/** Cached resources/templates of one server. */
@@ -758,6 +761,7 @@ export class MCPManager implements MCPManagerApi {
 	}
 
 	async #discoverAndConnect(options?: MCPDiscoverOptions): Promise<MCPLoadResult> {
+		const discoveryEpoch = this.#epoch;
 		this.#discoverOptions = options ? { ...options } : undefined;
 		let loadedConfigs: LoadMCPConfigsResult;
 		try {
@@ -775,6 +779,9 @@ export class MCPManager implements MCPManagerApi {
 			this.#emitConnectionStatus({ type: "failed", serverName: ".mcp.json", error: message });
 			throw error;
 		}
+		// Config loading may outlive disconnect/reload. Starting those old
+		// configs under the new connection epoch would resurrect removed servers.
+		if (this.#epoch !== discoveryEpoch) throw new Error("MCP discovery superseded by disconnect/reload");
 		const { configs, exaApiKeys, sources } = loadedConfigs;
 		const result = await this.connectServers(configs, sources, options?.onStatus, options?.startupTimeoutMs);
 		result.exaApiKeys = exaApiKeys;
@@ -817,7 +824,7 @@ export class MCPManager implements MCPManagerApi {
 	}
 
 	async #applyProjectConfig(enabled: boolean): Promise<void> {
-		await this.#discoveryInFlight;
+		await launchStep("mcp.discovery.wait", () => this.#discoveryInFlight);
 		const options = this.#discoverOptions;
 		if (!options || (options.enableProjectConfig ?? true) === enabled) return;
 		this.#discoverOptions = { ...options, enableProjectConfig: enabled };
@@ -1007,7 +1014,7 @@ export class MCPManager implements MCPManagerApi {
 
 			const toolsPromise = connectionPromise.then(async connection => {
 				try {
-					const serverTools = await listTools(connection);
+					const serverTools = await launchStep(`mcp.listTools.wait:${name}`, () => listTools(connection));
 					return { connection, serverTools };
 				} catch (error) {
 					// Detach and delete synchronously, then close in the background:
@@ -1490,11 +1497,18 @@ export class MCPManager implements MCPManagerApi {
 	}
 
 	/**
-	 * Get all known server names (connected, connecting, or discovered).
+	 * Get all known server names (connected, connecting, configured, or discovered).
+	 * Includes preserved `#serverConfigs` entries so source-less runtime/extension
+	 * servers that failed handshake remain visible after pending work settles.
 	 */
 	getAllServerNames(): string[] {
 		return Array.from(
-			new Set([...this.#sources.keys(), ...this.#connections.keys(), ...this.#pendingConnections.keys()]),
+			new Set([
+				...this.#sources.keys(),
+				...this.#connections.keys(),
+				...this.#pendingConnections.keys(),
+				...this.#serverConfigs.keys(),
+			]),
 		);
 	}
 
@@ -1879,7 +1893,9 @@ export class MCPManager implements MCPManagerApi {
 		this.#connections.set(name, connection);
 		this.#wireLink(name, connection);
 		try {
-			const serverTools = await listTools(connection, { signal: scope.signal });
+			const serverTools = await launchStep(`mcp.listTools.wait:${name}`, () =>
+				listTools(connection, { signal: scope.signal }),
+			);
 			this.#publishServerTools(name, connection, serverTools);
 			this.#notifyOwnerToolsChanged().catch(error => logger.debug("MCP tools-changed handler failed", { error }));
 			void this.#loadServerResourcesAndPrompts(name, connection);
@@ -1969,7 +1985,7 @@ export class MCPManager implements MCPManagerApi {
 		const callProvoked = this.#callProvokedToolRefreshes.delete(name);
 		let serverTools: MCPToolDefinition[];
 		try {
-			serverTools = await listTools(connection);
+			serverTools = await launchStep(`mcp.listTools.wait:${name}`, () => listTools(connection));
 		} catch (error) {
 			if (callProvoked) this.#callProvokedToolRefreshes.add(name);
 			throw error;

@@ -139,6 +139,9 @@ describe("MemoryProtocolHandler", () => {
 				ensureOnDisk: manager.ensureOnDisk.bind(manager),
 				flush: manager.flush.bind(manager),
 				getBranch: manager.getBranch.bind(manager),
+				getBranchMatching: manager.getBranchMatching.bind(manager),
+				getLatestBranchMatching: manager.getLatestBranchMatching.bind(manager),
+				getLeafId: manager.getLeafId.bind(manager),
 				getEntries: manager.getEntries.bind(manager),
 			};
 			const agentRegistry = new AgentRegistry();

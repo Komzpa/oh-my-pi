@@ -1,0 +1,3 @@
+DECISION: Yes—fix the narrow fixture isolation in PR92 if the failure reproduces; otherwise run each extension test file in a separate Bun process and record the shared-process failures.
+
+The no-deadline tests should not inherit deadline state when their harness omits critic registration. Keep the change in test fixtures; avoid unrelated production changes. The old DC wait failure passed 12/12 in isolation, so record it as a shared-process failure unless isolation confirms a real regression.

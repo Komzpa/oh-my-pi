@@ -634,8 +634,8 @@ contains `"rpc"`; this covers both `--mode rpc` and `--mode rpc-ui`. When enable
 turn, sent as a hidden `goal-continuation` message.
 
 - The turn starts once the yielding run has fully unwound. At that moment the goal
-  must still be active, the session idle with nothing queued, plan mode off, and
-  the session not being disposed.
+  must still be active, the session idle with nothing queued, plan mode off, open
+  todos not all blocked, and the session not being disposed.
 - While the turn is decided but not yet started, `get_state.isSettled`,
   `prompt_result.sessionSettled` and `session_settled` treat the session as busy.
   `session_settled` follows if the continuation is abandoned.
@@ -780,10 +780,18 @@ The corresponding `get_state` result reports the same computed state:
 ### `set_todos` payload
 
 Replaces the todo state for the current session and returns `{ todoPhases }`. The list is recorded on the current session branch and restored when that branch is reloaded, compacted, or resumed, like an interactive `/todo` edit.
-Phases use `{ name, tasks }`; tasks retain `{ content, status }`. There
-are no phase or task IDs. Status is `"pending"`, `"in_progress"`, `"completed"`,
-or `"abandoned"`. Snapshot cloning drops extra fields, including
-task `details` and `notes`.
+Phases use `{ name, tasks }`; tasks retain the native fields
+`{ content, status, blocker?, details?, notes?, schedule? }`. There are no phase or
+task IDs. Status is `"pending"`, `"in_progress"`, `"completed"`, `"abandoned"`, or
+`"blocked"`. Snapshot cloning preserves task metadata, including `details`,
+`notes`, and `schedule`.
+
+Optional `schedule` carries the native duration estimate, exact-content
+dependencies, exclusive owner/resources, progress evidence, start/finish times,
+observed executor, and durable attempt history. Absent dependencies mean unknown;
+an empty array explicitly means independent. Estimates use seconds; schedule and
+attempt timestamps and attempt durations use milliseconds. The same typed
+metadata is returned in session state and `set_todos` results.
 
 ```json
 {
@@ -1113,6 +1121,12 @@ Subagent forwarding defaults to `"off"`. `set_subagent_subscription` selects:
 - `"off"`: no forwarded subagent frames
 - `"progress"`: lifecycle and progress frames
 - `"events"`: lifecycle, progress, and full subagent event frames
+
+`subagent_lifecycle.payload` forwards the native lifecycle transition unchanged.
+Optional `at` is the emission time in Unix milliseconds, and `taskText` is the
+assignment/task text for that attempt. Optional `resolvedModelIdentity` and
+`resolvedThinkingLevel` report the observed model and thinking level when
+available, not a forecast or default. Events without these fields remain valid.
 
 `get_subagents` returns the registry snapshot sorted by subagent index and id.
 `get_subagent_messages` selects a transcript by `subagentId` or a registered

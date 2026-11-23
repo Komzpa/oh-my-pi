@@ -8,8 +8,9 @@
  * would be orphaned when the session exits.
  */
 import { isBunTestRuntime, logger, postmortem } from "@oh-my-pi/pi-utils";
+import { backgroundCommand } from "@oh-my-pi/pi-utils/background-priority";
 import { spawnManagedChild } from "../../daemon/children";
-import type { ModuleClient, ModuleTunnel } from "../../daemon/module";
+import type { ChildSpawn, ManagedChild, ModuleClient, ModuleTunnel } from "../../daemon/module";
 import { moduleStateDir } from "../../daemon/paths";
 import {
 	MCP_MODULE_KIND,
@@ -106,6 +107,13 @@ interface LocalUnit {
 }
 
 /** Construction parameters of {@link LocalMcpHost}. */
+
+/** Fork: MCP servers are tool children, so they start at background CPU/IO priority like other tool processes. */
+function spawnMcpServer(spec: ChildSpawn): ManagedChild {
+	const [application, ...args] = backgroundCommand([spec.application, ...spec.args]);
+	return spawnManagedChild({ ...spec, application: application ?? spec.application, args });
+}
+
 export interface LocalMcpHostOptions {
 	/** Owned by the host from here on: {@link LocalMcpHost.dispose} closes it. */
 	store: McpStore;
@@ -126,7 +134,7 @@ export class LocalMcpHost implements McpHostAccess {
 	constructor(options: LocalMcpHostOptions) {
 		this.#store = options.store;
 		this.#upstreams = options.upstreams;
-		this.#resolver = new McpEraResolver(options.store, options.upstreams, spawnManagedChild);
+		this.#resolver = new McpEraResolver(options.store, options.upstreams, spawnMcpServer);
 	}
 
 	async resolve(spec: McpServerSpec, signal?: AbortSignal): Promise<McpResolveResult> {
@@ -147,7 +155,7 @@ export class LocalMcpHost implements McpHostAccess {
 				name: request.name,
 				store: this.#store,
 				upstreams: this.#upstreams,
-				deps: { spawn: spawnManagedChild },
+				deps: { spawn: spawnMcpServer },
 				idleMs: request.idleMs,
 				changed: () => {},
 			});

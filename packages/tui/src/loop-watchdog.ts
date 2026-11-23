@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
-import { logger, resetLoopPhaseWindow, takeLoopPhaseAttribution } from "@oh-my-pi/pi-utils";
+import * as logger from "@oh-my-pi/pi-utils/logger";
+import { resetLoopPhaseWindow, takeLoopPhaseAttribution } from "@oh-my-pi/pi-utils/loop-phase";
 import { createJscLoopSampler, type LoopSampler, summarizeBlock } from "./loop-sampler";
 
 export interface LoopWatchdogOptions {
@@ -16,6 +17,8 @@ export interface LoopWatchdogOptions {
 	/** Timer source; injectable for tests. Default `setTimeout`. */
 	schedule?: (cb: () => void, ms: number) => LoopWatchdogTimer;
 	/** Stack sampler naming the code behind a block; null disables. Default {@link createJscLoopSampler}. */
+	/** Called when a real loop block is reported. */
+	onBlocked?: (event: { blockedMs: number; cpuMs: number; phase: string }) => void;
 	sampler?: LoopSampler | null;
 }
 
@@ -41,8 +44,9 @@ const CPU_BUSY_RATIO = 0.01;
  * Always-on event-loop lag probe. Each tick is scheduled `intervalMs` ahead,
  * with that target recorded as its deadline; a tick that fires `thresholdMs`
  * past its deadline means the loop was blocked that long. The overshoot is
- * logged once on the rising edge (one block ⇒ one line, deduped via
- * `#wasBlocked`). Attribution via
+ * logged for every delayed probe window. Re-arming a timer establishes a new
+ * deadline: another late callback is another stall, even without an on-time tick
+ * in between. Attribution via
  * {@link takeLoopPhaseAttribution} totals each innermost phase only after the tick's
  * deadline. A phase is named, with `phaseMs`, only when its total outweighs all
  * unlabeled time in that late window; otherwise the block remains "unknown".
@@ -71,9 +75,9 @@ export class LoopWatchdog {
 	#now: () => number;
 	#cpuNow: () => number;
 	#schedule: (cb: () => void, ms: number) => LoopWatchdogTimer;
+	#onBlocked: ((event: { blockedMs: number; cpuMs: number; phase: string }) => void) | undefined;
 	#expected = 0;
 	#expectedCpu = 0;
-	#wasBlocked = false;
 	// When the most recent late tick ran — the moment a detected block ended.
 	#stallEndedAt = Number.NEGATIVE_INFINITY;
 	#running = false;
@@ -101,13 +105,13 @@ export class LoopWatchdog {
 				const timer = setTimeout(cb, ms);
 				return { unref: () => timer.unref?.(), cancel: () => clearTimeout(timer) };
 			});
+		this.#onBlocked = options.onBlocked;
 		this.#sampler = options.sampler === undefined ? createJscLoopSampler() : options.sampler;
 	}
 
 	start(): void {
 		if (this.#running) return;
 		this.#running = true;
-		this.#wasBlocked = false;
 		this.#stallEndedAt = Number.NEGATIVE_INFINITY;
 		if (this.#sampler) {
 			this.#sampler.start();
@@ -121,7 +125,6 @@ export class LoopWatchdog {
 		// Attribution state is process-global: a watchdog that is not running must not disarm another's window.
 		if (!this.#running) return;
 		this.#running = false;
-		this.#wasBlocked = false;
 		this.#stallEndedAt = Number.NEGATIVE_INFINITY;
 		this.#generation++;
 		this.#handle?.cancel?.();
@@ -173,26 +176,24 @@ export class LoopWatchdog {
 		if (blockedMs > this.#thresholdMs) {
 			// Only a late tick needs CPU time: to classify the gap and to log it.
 			const cpuMs = this.#cpuNow() - this.#expectedCpu;
-			if (this.#isSuspension(blockedMs, cpuMs)) {
-				this.#wasBlocked = false;
-			} else {
+			if (!this.#isSuspension(blockedMs, cpuMs)) {
 				this.#stallEndedAt = now;
-				if (!this.#wasBlocked) {
-					this.#wasBlocked = true;
-					const block = samples?.length ? summarizeBlock(samples, blockedMs) : undefined;
-					logger.warn("ui.loop-blocked", {
-						blockedMs: Math.round(blockedMs),
-						cpuMs: Math.round(cpuMs),
-						phase: phase?.label ?? "unknown",
-						...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
-						...(block
-							? { cause: block.cause, causeShare: Math.round(block.share * 100) / 100, top: block.top }
-							: {}),
-					});
-				}
+				const block = samples?.length ? summarizeBlock(samples, blockedMs) : undefined;
+				// This establishes delayed macrotask delivery, not whether one synchronous
+				// block or a chain of microtasks occupied the intervening time; a sampler
+				// that names the dominant stack frames refines `cause`.
+				logger.warn("ui.loop-blocked", {
+					cause: "macrotask-delay",
+					blockedMs: Math.round(blockedMs),
+					cpuMs: Math.round(cpuMs),
+					phase: phase?.label ?? "unknown",
+					...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
+					...(block
+						? { cause: block.cause, causeShare: Math.round(block.share * 100) / 100, top: block.top }
+						: {}),
+				});
+				this.#onBlocked?.({ blockedMs, cpuMs, phase: phase?.label ?? "unknown" });
 			}
-		} else {
-			this.#wasBlocked = false;
 		}
 		this.#armTick();
 	}

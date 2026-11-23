@@ -6,7 +6,8 @@
  * Project-level discovery walks up from cwd to repoRoot.
  */
 import * as path from "node:path";
-import { isWsl, windowsPathToWslMount } from "@oh-my-pi/pi-utils";
+import { isWsl, logger, windowsPathToWslMount } from "@oh-my-pi/pi-utils";
+import { spawnBackgroundSync } from "@oh-my-pi/pi-utils/background-priority";
 import { registerProvider } from "../capability";
 import { type ContextFile, contextFileCapability } from "../capability/context-file";
 import { readFile } from "../capability/fs";
@@ -57,16 +58,24 @@ const HOST_PROBE_TIMEOUT_MS = 500;
  */
 export function runHostProbe(cmd: string[], timeoutMs = HOST_PROBE_TIMEOUT_MS): string | undefined {
 	try {
-		const result = Bun.spawnSync(cmd, {
+		const result = spawnBackgroundSync(cmd, {
 			stdout: "pipe",
-			stderr: "ignore",
+			stderr: "pipe",
 			timeout: timeoutMs,
 			killSignal: "SIGKILL",
 		});
-		if (result.exitCode !== 0) return undefined;
+		if (result.exitCode !== 0) {
+			logger.debug("Host discovery probe failed", {
+				command: cmd[0],
+				exitCode: result.exitCode,
+				stderr: result.stderr.toString(),
+			});
+			return undefined;
+		}
 		const resolved = result.stdout.toString().trim();
 		return resolved.length > 0 ? resolved : undefined;
-	} catch {
+	} catch (error) {
+		logger.debug("Host discovery probe could not start", { command: cmd[0], error: String(error) });
 		return undefined;
 	}
 }

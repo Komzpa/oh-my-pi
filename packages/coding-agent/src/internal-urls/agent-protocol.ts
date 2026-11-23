@@ -23,19 +23,30 @@ import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import { formatDuration, isEnoent, prompt } from "@oh-my-pi/pi-utils";
-import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
+import {
+	type PeerSessionOptions,
+	PeerSessionError,
+	listPeerSessions,
+	peerSessionDisplayName,
+	sendPeerMessage,
+	writeShellReply,
+} from "../collab/registry";
+import { AgentRegistry, type AgentRef, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { ensurePersistedRoster, sessionFileBelongsToRoot } from "../registry/persisted-agents";
 import { IrcBus } from "../irc/bus";
-import { executeSend, isIrcEnabled } from "../irc/messaging";
+import { agentMessagingUnavailableReason, executeSend, isIrcEnabled } from "../irc/messaging";
 import { agentMesh } from "../irc/mesh";
 import { formatPeerAddress, type PeerAddress } from "../irc/mesh-protocol";
 import type { AgentSessionHandle } from "../session/agent-session-handle";
+import { formatSessionHistoryMarkdown } from "../session/session-history-format";
+import { loadSessionMessagesReadOnly } from "../session/session-loader";
 import { cfgTaskCrossInstance } from "../task/settings";
 import agentPromptDoc from "../prompts/internal-urls/agent.md" with { type: "text" };
 import agentProgressTemplate from "../prompts/tools/agent-url-progress.md" with { type: "text" };
 import agentSupersededTemplate from "../prompts/tools/agent-url-superseded.md" with { type: "text" };
-import { loadSessionMessagesReadOnly } from "../session/session-loader";
-import { artifactsDirsFromRegistry } from "./registry-helpers";
+import { HistoryProtocolHandler } from "./history-protocol";
+import { parseInternalUrl } from "./parse";
+import { artifactsDirsFromRegistry, sessionFilesFromDisk } from "./registry-helpers";
 import type {
 	InternalResource,
 	InternalWriteResult,
@@ -95,6 +106,10 @@ interface OutputTarget {
 	segments: string[];
 	dirs: string[];
 	registry?: AgentRegistryApi;
+	/** Caller root's artifact dir; scopes registered-output and transcript fallbacks. */
+	preferredDir?: string;
+	/** Caller context for the transcript fallback of local lookups. */
+	context?: ResolveContext;
 	/** Last status published by the peer that owns this subagent. */
 	remoteStatus?: string;
 	/** Transcript-backed progress source for a peer, including retained agents. */
@@ -112,9 +127,27 @@ interface OutputScan {
 	availableIds: Set<string>;
 }
 
+interface OutputLookupContext {
+	dirs: string[];
+	preferredDir?: string;
+}
+
 /** True when the URL extracts a `/<json-path>` value instead of naming the whole output. */
 function hasPathExtraction(url: InternalUrl): boolean {
 	return url.pathname !== "" && url.pathname !== "/";
+}
+
+function isPathInsideDir(file: string, dir: string): boolean {
+	const relative = path.relative(dir, file);
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function sessionFileBelongsToDir(file: string, dir: string): boolean {
+	return path.resolve(file) === path.resolve(`${dir}.jsonl`) || isPathInsideDir(file, dir);
+}
+
+function isUnknownAgentError(error: unknown, id: string): boolean {
+	return error instanceof Error && error.message.startsWith(`Unknown agent: ${id}\n`);
 }
 
 /**
@@ -232,8 +265,93 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		selectors: "lines",
 		immutable: true,
 		linkable: true,
-		write: { via: "handler", payload: "verbatim", scope: "coordination", tier: () => "read" },
+		write: {
+			via: "handler",
+			payload: "verbatim",
+			scope: "coordination",
+			tier: url => ((url.rawHost || url.hostname).startsWith("peer:") ? "write" : "read"),
+		},
 	};
+
+	constructor(private readonly peerSessions?: PeerSessionOptions) {
+		// Keep external inbox routing separate from the intra-session write path.
+		const write = this.write.bind(this);
+		this.write = async (url, content, context) => {
+			let to = url.rawHost || url.hostname;
+			if (to !== "shell" && !to.startsWith("shell:") && !to.startsWith("peer:")) {
+				return write(url, content, context);
+			}
+			const session = context?.session;
+			if (!session) throw new Error("agent:// messaging requires a tool session");
+			const senderId = session.getAgentId?.();
+			if (
+				!session.agentRegistry ||
+				!senderId ||
+				session.enableIrc === false ||
+				!isIrcEnabled(session.settings, session.taskDepth ?? 0)
+			) {
+				throw new Error("Peer messaging is unavailable in this session.");
+			}
+			if (hasPathExtraction(url)) {
+				throw new Error("agent:// message target cannot have a JSON-path suffix.");
+			}
+			if (!content.trim()) throw new Error("agent:// messages require non-empty content.");
+			try {
+				if (to === "shell") to = IrcBus.global().resolveShellReplyTarget(senderId);
+				if (to.startsWith("shell:")) {
+					const sid = session.getSessionId?.() ?? senderId;
+					let fromName: string | undefined;
+					try {
+						const peers = await listPeerSessions(this.peerSessions);
+						fromName =
+							peers.find(peer => peer.sessionId === sid)?.displayName ??
+							peerSessionDisplayName({
+								sessionName: null,
+								cwd: session.cwd,
+								sessionId: sid,
+								mainAgentId: senderId,
+							});
+					} catch {
+						fromName = peerSessionDisplayName({
+							sessionName: null,
+							cwd: session.cwd,
+							sessionId: sid,
+							mainAgentId: senderId,
+						});
+					}
+					await writeShellReply(
+						to,
+						{ from: `peer:${sid}`, ...(fromName ? { fromName } : {}), text: content, createdAt: Date.now() },
+						this.peerSessions,
+					);
+					return { content: [{ type: "text", text: `delivered to ${to} (shell inbox)` }], isError: false };
+				}
+				const sessionId = session.getSessionId?.();
+				if (!sessionId) throw new Error("Peer replies require a sender session ID.");
+				const receipt = await sendPeerMessage({
+					registry: this.peerSessions,
+					from: { kind: "session", sessionId, cwd: session.cwd },
+					target: to,
+					text: content,
+				});
+				return {
+					content: [
+						{
+							type: "text",
+							text:
+								receipt.status === "failed" || receipt.status === "uncertain"
+									? `failed: ${receipt.reason}`
+									: `${receipt.status} to ${receipt.target} ${receipt.agent} (${receipt.outcome})`,
+						},
+					],
+					isError: receipt.status === "failed" || receipt.status === "uncertain",
+				};
+			} catch (error) {
+				if (!(error instanceof PeerSessionError)) throw error;
+				return { content: [{ type: "text", text: error.message }], isError: true };
+			}
+		};
+	}
 
 	promptDoc(host: SchemeHost): string {
 		return prompt
@@ -252,30 +370,34 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	 * previous-run banner, the status of a run that published nothing).
 	 */
 	async locate(url: InternalUrl, context?: ResolveContext): Promise<string | null> {
+		// A bounded restored roster may omit this worker; retain it before either
+		// output lookup or progress lookup, without changing the shared lookup path.
+		if (context?.sessionFile) {
+			await ensurePersistedRoster(
+				context.agentRegistry ?? AgentRegistry.global(),
+				context.sessionFile,
+				url.rawHost || url.hostname,
+			);
+		}
 		const outputId = url.rawHost || url.hostname;
 		if (!outputId) throw new Error("agent:// URL requires an output ID: agent://<id>");
 		if (outputId === "all" || hasPathExtraction(url)) return null;
 		if (crossInstanceEnabled(context) && (outputId === "peers" || /^\d+$/.test(outputId))) return null;
 		if (isSuperseded(context?.agentRegistry ?? AgentRegistry.global(), outputId)) return null;
-		const dirs = await this.#outputDirs(context);
-		if (dirs.length === 0) return null;
-		const foundPath = (await this.#findOutput(dirs, outputId)).foundPath;
+		const { dirs, preferredDir } = await this.#outputLookupContext(context);
+		const scan = dirs.length > 0 ? await this.#findOutput(dirs, outputId) : this.#emptyScan();
+		const foundPath = scan.foundPath ?? (await this.#findRegisteredOutput(outputId, preferredDir))?.foundPath;
 		return foundPath && !(await isBlankFile(foundPath)) ? foundPath : null;
 	}
 
 	async write(url: InternalUrl, content: string, context?: WriteContext): Promise<InternalWriteResult> {
 		const session = context?.session;
 		if (!session) throw new Error("agent:// messaging requires a tool session");
+		const unavailable = agentMessagingUnavailableReason(session);
+		if (unavailable !== undefined) throw new Error(unavailable);
 		const registry = session.agentRegistry;
 		const senderId = session.getAgentId?.();
-		if (
-			!registry ||
-			!senderId ||
-			session.enableIrc === false ||
-			!isIrcEnabled(session.settings, session.taskDepth ?? 0)
-		) {
-			throw new Error("Peer messaging is unavailable in this session.");
-		}
+		if (!registry || !senderId) throw new Error("Peer messaging is unavailable in this session.");
 		const pid = cfgTaskCrossInstance.get(session.settings) ? pidTarget(url) : undefined;
 		const named = pid
 			? pid.local
@@ -321,6 +443,15 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	}
 
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		// A bounded restored roster may omit this worker; retain it before either
+		// output lookup or progress lookup, without changing the shared lookup path.
+		if (context?.sessionFile) {
+			await ensurePersistedRoster(
+				context.agentRegistry ?? AgentRegistry.global(),
+				context.sessionFile,
+				url.rawHost || url.hostname,
+			);
+		}
 		const outputId = url.rawHost || url.hostname;
 		if (outputId === "all") throw new Error("agent://all is write-only; use it to broadcast a message.");
 		if (!outputId) {
@@ -331,10 +462,13 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		const registry = context?.agentRegistry ?? AgentRegistry.global();
 		const pid = crossInstance ? pidTarget(url) : undefined;
 		if (pid && !pid.local) return this.#resolvePeer(url, pid);
+		const { dirs, preferredDir } = await this.#outputLookupContext(context);
 		return this.#resolveOutput(url, {
 			outputId: pid ? (pid.address.id ?? MAIN_AGENT_ID) : outputId,
 			segments: pid ? pid.segments : url.pathname.split("/").filter(Boolean).map(decodeSegment),
-			dirs: await this.#outputDirs(context),
+			dirs,
+			preferredDir,
+			context,
 			registry,
 		});
 	}
@@ -392,18 +526,49 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	}
 
 	async #resolveOutput(url: InternalUrl, target: OutputTarget): Promise<InternalResource> {
-		const { outputId, dirs, registry } = target;
+		const { outputId, dirs, registry, preferredDir, context } = target;
 		const extraction = target.segments.length > 0;
-		const scan = dirs.length > 0 ? await this.#findOutput(dirs, outputId) : undefined;
-		if (!scan?.foundPath) {
-			// No published output yet. A registered agent (running, idle after a
-			// non-terminal yield, or parked before publishing) is the same
-			// registry `write agent://<id>` delivers to: answer with its progress.
+
+		const decodedSegments = target.segments;
+
+		let scan = dirs.length > 0 ? await this.#findOutput(dirs, outputId) : this.#emptyScan();
+		if (!scan.foundPath) {
+			const registered = await this.#findRegisteredOutput(outputId, preferredDir);
+			if (registered) {
+				scan = {
+					foundPath: registered.foundPath,
+					jsonPath: registered.jsonPath,
+					anyDirExists: true,
+					availableIds: new Set([...scan.availableIds, outputId]),
+				};
+			}
+		}
+		if (!scan.anyDirExists) {
+			if (!extraction) {
+				const transcript = await this.#resolveTranscriptFallback(url, outputId, context, preferredDir);
+				if (transcript) return transcript;
+			}
+			throw new Error("No artifacts directory found");
+		}
+		if (!scan.foundPath) {
+			// No published output yet. A registered in-scope agent with accepted
+			// `yield` sections (or a request for its unpublished JSON) answers with
+			// its progress view; a peer's agent answers from its transcript;
+			// otherwise fall back to the worker transcript.
 			const ref = registry?.get(outputId);
-			const progress = ref && ref.kind !== "advisor" ? ref : await target.remoteProgress?.();
-			if (progress) return this.#resolveProgress(url, progress, extraction);
-			if (!scan) throw new Error("No session - agent outputs unavailable");
-			if (!scan.anyDirExists) throw new Error("No artifacts directory found");
+			const refInScope =
+				!!ref && (!preferredDir || (!!ref.sessionFile && sessionFileBelongsToDir(ref.sessionFile, preferredDir)));
+			if (ref && ref.kind !== "advisor" && refInScope) {
+				if (extraction || (await this.#hasAcceptedYield(ref))) {
+					return this.#resolveProgress(url, ref, extraction);
+				}
+			}
+			const remote = ref ? undefined : await target.remoteProgress?.();
+			if (remote) return this.#resolveProgress(url, remote, extraction);
+			if (!extraction) {
+				const transcript = await this.#resolveTranscriptFallback(url, outputId, context, preferredDir);
+				if (transcript) return transcript;
+			}
 			const registered =
 				registry
 					?.list()
@@ -411,9 +576,6 @@ export class AgentProtocolHandler implements ProtocolHandler {
 					.map(candidate => candidate.id) ?? [];
 			throw notFoundError(outputId, [...scan.availableIds, ...registered]);
 		}
-
-		const decodedSegments = target.segments;
-
 		const rawContent = await Bun.file(scan.foundPath).text();
 		// A run that failed or was cancelled can publish an empty output; a blank
 		// read would pass for success, so show what the agent did instead.
@@ -494,6 +656,14 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		};
 	}
 
+	/** Whether a registered agent has submitted any accepted non-terminal `yield` section. */
+	async #hasAcceptedYield(ref: AgentRef): Promise<boolean> {
+		let messages: readonly AgentMessage[] = [];
+		if (ref.session) messages = ref.session.messages;
+		else if (ref.sessionFile) messages = await loadSessionMessagesReadOnly(ref.sessionFile);
+		return yieldSections(messages).length > 0;
+	}
+
 	/**
 	 * Progress view of a registered agent that has not published `<id>.md`:
 	 * its status, every accepted `yield` (non-terminal sections included), and
@@ -552,11 +722,15 @@ export class AgentProtocolHandler implements ProtocolHandler {
 	 * the first-hit id map for a shared id. No caller session file: keep the
 	 * pre-existing global scan untouched.
 	 */
-	async #outputDirs(context: ResolveContext | undefined): Promise<string[]> {
+	async #outputLookupContext(context: ResolveContext | undefined): Promise<OutputLookupContext> {
 		const rootSessionFile = context?.sessionFile
 			? await ensurePersistedRoster(AgentRegistry.global(), context.sessionFile)
 			: undefined;
-		return artifactsDirsFromRegistry(rootSessionFile ? { preferredDir: rootSessionFile.slice(0, -6) } : undefined);
+		const preferredDir = rootSessionFile ? rootSessionFile.slice(0, -6) : undefined;
+		return {
+			dirs: artifactsDirsFromRegistry(preferredDir ? { preferredDir } : undefined),
+			preferredDir,
+		};
 	}
 
 	/**
@@ -598,6 +772,120 @@ export class AgentProtocolHandler implements ProtocolHandler {
 		const sidecar = jsonById.get(id);
 		const jsonPath = sidecar && path.dirname(sidecar) === path.dirname(foundPath) ? sidecar : undefined;
 		return { foundPath, jsonPath, anyDirExists, availableIds };
+	}
+
+	#emptyScan(): OutputScan {
+		return { anyDirExists: false, availableIds: new Set() };
+	}
+
+	async #findRegisteredOutput(
+		id: string,
+		preferredDir: string | undefined,
+	): Promise<{ foundPath: string; jsonPath?: string } | undefined> {
+		const ref = this.#findRegisteredRef(id);
+		const outputPath = ref?.history?.outputPath;
+		if (!outputPath) return undefined;
+		if (preferredDir && !isPathInsideDir(outputPath, preferredDir)) return undefined;
+		try {
+			const stat = await fs.stat(outputPath);
+			if (!stat.isFile()) return undefined;
+		} catch (err) {
+			if (isEnoent(err)) return undefined;
+			throw err;
+		}
+		const jsonPath = path.join(path.dirname(outputPath), `${path.basename(outputPath, ".md")}.json`);
+		try {
+			const stat = await fs.stat(jsonPath);
+			return { foundPath: outputPath, jsonPath: stat.isFile() ? jsonPath : undefined };
+		} catch (err) {
+			if (isEnoent(err)) return { foundPath: outputPath };
+			throw err;
+		}
+	}
+
+	#findRegisteredRef(id: string): AgentRef | undefined {
+		const registry = AgentRegistry.global();
+		const lower = id.toLowerCase();
+		return (
+			registry.get(id) ??
+			registry.list().find(candidate => candidate.kind !== "advisor" && candidate.id.toLowerCase() === lower)
+		);
+	}
+
+	async #resolveTranscriptFallback(
+		url: InternalUrl,
+		outputId: string,
+		context: ResolveContext | undefined,
+		preferredDir: string | undefined,
+	): Promise<InternalResource | undefined> {
+		if (preferredDir) {
+			const ref = this.#findRegisteredRef(outputId);
+			const refBelongs = ref?.sessionFile ? sessionFileBelongsToDir(ref.sessionFile, preferredDir) : false;
+			if (ref?.session && refBelongs) {
+				return await this.#resolveTranscriptFromHistory(url, outputId, context);
+			}
+			const disk = await this.#resolveTranscriptFromDisk(url, outputId, preferredDir);
+			if (disk) return disk;
+			if (!ref || !refBelongs) return undefined;
+		}
+		return await this.#resolveTranscriptFromHistory(url, outputId, context);
+	}
+
+	async #resolveTranscriptFromHistory(
+		url: InternalUrl,
+		outputId: string,
+		context: ResolveContext | undefined,
+	): Promise<InternalResource | undefined> {
+		try {
+			const transcript = await new HistoryProtocolHandler().resolve(
+				parseInternalUrl(`history://${encodeURIComponent(outputId)}`),
+				context,
+			);
+			return {
+				...transcript,
+				url: url.href,
+				notes: [
+					...(transcript.notes ?? []),
+					"Fallback: no agent output artifact found; serving worker transcript.",
+				],
+				shape: "document",
+			};
+		} catch (error) {
+			if (!isUnknownAgentError(error, outputId)) throw error;
+			return undefined;
+		}
+	}
+
+	async #resolveTranscriptFromDisk(
+		url: InternalUrl,
+		outputId: string,
+		preferredDir: string,
+	): Promise<InternalResource | undefined> {
+		const files = await sessionFilesFromDisk(preferredDir);
+		const lower = outputId.toLowerCase();
+		let match: { id: string; file: string } | undefined;
+		for (const [id, file] of files) {
+			if (!sessionFileBelongsToDir(file, preferredDir)) continue;
+			if (id === outputId || id.toLowerCase() === lower) {
+				match = { id, file };
+				if (id === outputId) break;
+			}
+		}
+		if (!match) return undefined;
+		const messages = await loadSessionMessagesReadOnly(match.file);
+		const content = formatSessionHistoryMarkdown(messages, { title: `${match.id} (on disk)` });
+		return {
+			url: url.href,
+			content,
+			contentType: "text/markdown",
+			size: Buffer.byteLength(content, "utf-8"),
+			sourcePath: match.file,
+			notes: [
+				"Source: session file (read-only, unregistered)",
+				"Fallback: no agent output artifact found; serving worker transcript.",
+			],
+			shape: "document",
+		};
 	}
 
 	async complete(): Promise<UrlCompletion[]> {

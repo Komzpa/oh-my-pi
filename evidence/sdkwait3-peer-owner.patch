@@ -1,0 +1,44 @@
+diff --git a/packages/coding-agent/src/sdk.ts b/packages/coding-agent/src/sdk.ts
+index 677e34a3920..1ba8b3d48e6 100644
+--- a/packages/coding-agent/src/sdk.ts
++++ b/packages/coding-agent/src/sdk.ts
+@@ -5829,7 +5829,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
+ 		hasRegistered = true;
+ 		if (options.peerCoordination) {
+ 			peerRuntime = new PeerRuntime(session, resolvedAgentId, cwd, agentRegistry);
+-			await peerRuntime.initialize();
++			peerRuntime.startInitialization();
+ 			disposeCallbacks.add(() => peerRuntime?.dispose());
+ 		}
+ 		// MCP notification bridge cleanup — assigned when the bridge is wired below,
+diff --git a/packages/coding-agent/src/task/peer-runtime.ts b/packages/coding-agent/src/task/peer-runtime.ts
+index 50d01c8fbdc..5dde6bc32cd 100644
+--- a/packages/coding-agent/src/task/peer-runtime.ts
++++ b/packages/coding-agent/src/task/peer-runtime.ts
+@@ -99,13 +99,21 @@ export class PeerRuntime {
+ 		});
+ 		runtimes.set(session, this);
+ 	}
++	/** Optional baseline discovery must not gate SDK readiness on a shared status cooldown.
++	 * Keep observations ordered after it so an older baseline cannot overwrite a newer one.
++	 */
++	startInitialization(): void {
++		this.#pending = logger.time("sdk.peer.initialize.background", () => this.initialize()).catch(error => {
++			logger.debug("Peer baseline failed", { id: this.id, error: String(error) });
++		});
++	}
+ 	async initialize(): Promise<void> {
+-		const repository = vcs.git(this.#scopeRoot());
++		const repository = logger.time("sdk.peer.repository", () => vcs.git(this.#scopeRoot()));
+ 		if (!repository) return;
+-		const status = await repository.statusPorcelain({ untracked: "all", nulTerminated: true });
+-		this.#baseline = await this.#snapshot(repository.info().repoRoot ?? this.cwd, status);
+-		this.#head = await repository.headSha();
+-		this.#branch = await repository.currentBranch();
++		const status = await logger.time("sdk.peer.status.wait", () => repository.statusPorcelain({ untracked: "all", nulTerminated: true }));
++		this.#baseline = await logger.time("sdk.peer.snapshot.wait", () => this.#snapshot(repository.info().repoRoot ?? this.cwd, status));
++		this.#head = await logger.time("sdk.peer.head.wait", () => repository.headSha());
++		this.#branch = await logger.time("sdk.peer.branch.wait", () => repository.currentBranch());
+ 	}
+ 	#scopeRoot(): string {
+ 		return path.resolve(this.cwd, this.registry.get(this.id)?.history?.peerCoordination?.scope.root ?? this.cwd);

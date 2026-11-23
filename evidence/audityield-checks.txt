@@ -1,0 +1,98 @@
+base-tests
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/row_audit.test.ts:
+606 | 	await h.settle(0, { rows: [{ row: row.content, verdict: "inconclusive", findings: "retry" }] });
+607 | 	await h.settle(1, coolingYields[0].arguments.data);
+608 | 	// Keep the same attempt: the old harness has already recorded its omitted result.
+609 | 	const current = h.rows()[0];
+610 | 	expect(current.schedule.audit.verdict).toBe("omitted");
+611 | 	h.launches[1].onResult(valid);
+                     ^
+TypeError: h.launches[1].onResult is not a function. (In 'h.launches[1].onResult(valid)', 'h.launches[1].onResult' is undefined)
+      at <anonymous> (/home/kom/proj/ai_pr/omp-audityield-20261107/oh-my-pi/packages/reemxy-extensions/extensions/row_audit.test.ts:611:16)
+(fail) Cooling late corrected yield supersedes omitted only within its unchanged audit attempt [14.47ms]
+
+packages/coding-agent/test/extensions-runner.test.ts:
+4975 | 				outputSchema: params.outputSchema,
+4976 | 				outputSchemaMode: params.schemaMode,
+4977 | 			} as ToolSession);
+4978 | 			// Repetition must never reach the permissive schema override.
+4979 | 			for (let i = 0; i < 5; i++) {
+4980 | 				await expect(tool.execute("bad", coolingYields[0].arguments)).rejects.toThrow(
+                                                                                 ^
+error: expect(received).rejects.toThrow(expected)
+
+Expected promise that rejects
+Received promise that resolved: Promise { <resolved> }
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-audityield-20261107/oh-my-pi/packages/coding-agent/test/extensions-runner.test.ts:4980:75)
+(fail) ExtensionRunner > invokeTool same-tool delegation > Cooling audit rejects malformed and missing-row yields in-tool, then forwards the corrected verdict [13.40ms]
+
+ 0 pass
+ 131 filtered out
+ 2 fail
+ 7 expect() calls
+Ran 2 tests across 2 files. [2.06s]
+
+final-regression
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/row_audit.test.ts:
+(pass) Cooling late corrected yield supersedes omitted only within its unchanged audit attempt [2.27ms]
+
+packages/coding-agent/test/extensions-runner.test.ts:
+(pass) ExtensionRunner > invokeTool same-tool delegation > Cooling audit rejects malformed and missing-row yields in-tool, then forwards the corrected verdict [5.17ms]
+
+ 2 pass
+ 131 filtered out
+ 0 fail
+ 20 expect() calls
+Ran 2 tests across 2 files. [766.00ms]
+
+suites
+(pass) todoToolRenderer.renderResult label sanitization > flattens tabs in the zero-task fallback text [0.06ms]
+(pass) todoToolRenderer.renderCall preview sanitization > strips control sequences from the task and phase fragments [0.05ms]
+(pass) todoToolRenderer.renderCall preview sanitization > flattens tabs so a fragment cannot punch holes in the header [0.02ms]
+(pass) todo schedule rejects copied estimates > skips copied estimates while applying other fields and valid rows [1.05ms]
+(pass) todo schedule rejects copied estimates > accepts two rows that share a triple and three rows with distinct triples [0.77ms]
+(pass) todo schedule rejects copied estimates > counts only rows whose estimate changes, so resending an accepted plan is not refused [0.56ms]
+(pass) todo schedule rejects copied estimates > replays a recorded call that carried a copied triple, so an older session still loads [0.17ms]
+
+ 775 pass
+ 0 fail
+ 9719 expect() calls
+Ran 775 tests across 44 files. [51.41s]
+
+final-types
+@oh-my-pi/pi-tui:check:types                    | ✓ No type errors in 1,413 files [293.70ms]
+@oh-my-pi/pi-tui:check:types                    | Done in 311ms
+@oh-my-pi/pi-utils:check:types                  | ✓ No type errors in 253 files [100.71ms]
+@oh-my-pi/pi-utils:check:types                  | Done in 110ms
+@oh-my-pi/pi-wire:check:types                   | ✓ No type errors in 6 files [11.10ms]
+@oh-my-pi/pi-wire:check:types                   | Done in 14ms
+@oh-my-pi/reemxy-extensions:check:types         | ✓ No type errors in 2,802 files [412.23ms]
+@oh-my-pi/reemxy-extensions:check:types         | Done in 448ms
+@oh-my-pi/snapcompact:check:types               | ✓ No type errors in 502 files [174.67ms]
+@oh-my-pi/snapcompact:check:types               | Done in 187ms
+@oh-my-pi/typescript-edit-benchmark:check:types | ✓ No type errors in 2,716 files [459.79ms]
+@oh-my-pi/typescript-edit-benchmark:check:types | Done in 483ms
+
+fresh-upstream
+CONFLICT #16651 upstream/queue-message-behind-child-brief (26bccc4314) after 3 clean PRs; last applied: #16646
+  packages/coding-agent/src/task/executor.ts
+  find the earlier PR touching these files: git log --oneline <upstream>..<each earlier head> -- <file>
+
+composite-types
+✓ No type errors in 1,433 files [1.52s]
+✓ @oh-my-pi/typescript-edit-benchmark check:types (1.7s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 2,783 files [1.64s]
+✓ @oh-my-pi/pi-utils check:types (0.8s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 257 files [583.31ms]
+✓ @oh-my-pi/pi-wire check:types (0.1s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 6 files [74.99ms]
+
+19/19 checks passed; 0 failed; concurrency limit 7.

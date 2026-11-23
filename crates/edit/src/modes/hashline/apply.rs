@@ -36,6 +36,14 @@ use crate::{
 pub static STRUCTURAL_CLOSER_RE: LazyLock<Regex> =
 	LazyLock::new(|| Regex::new(r"^\s*[)\]}]+[;,]?\s*$").expect("valid structural-closer regex"));
 
+/// A structural closer, ignoring a trailing comment (`} // bar`,
+/// `}; /* end */`).
+pub fn is_structural_closer(text: &str) -> bool {
+	static COMMENTED: LazyLock<Regex> = LazyLock::new(|| {
+		Regex::new(r"^\s*[)\]}]+[;,]?\s*(?://.*|/\*.*\*/)\s*$").expect("valid commented-closer regex")
+	});
+	STRUCTURAL_CLOSER_RE.is_match(text) || COMMENTED.is_match(text)
+}
 /// A C-family preprocessor directive row. Written at column 0 whatever the
 /// surrounding depth, so it says nothing about a body's indentation.
 static PREPROCESSOR_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -1021,7 +1029,15 @@ fn landing_rejection(edits: &[Edit], lines: &[&str], path: &str) -> Option<EditE
 			.get((group.anchor - 1) as usize)
 			.copied()
 			.unwrap_or("");
-		if has_content(anchor_text) && indent_deeper(leading_indent(anchor_text), &target) {
+		// An insert anchored on a structural closer stays at the gap the
+		// locator specified: sliding a shallower body would carry it past the
+		// closer of the construct containing the anchor — past a class closer
+		// for a member like `private:`, landing invalid code — and `PUT >N:`
+		// / `PUT >N*` on a closer promised exactly that gap.
+		if has_content(anchor_text)
+			&& !is_structural_closer(anchor_text)
+			&& indent_deeper(leading_indent(anchor_text), &target)
+		{
 			let mut landing = group.anchor;
 			let mut crossed = 0;
 			let mut blocked = false;

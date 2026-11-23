@@ -12,23 +12,51 @@ import {
 	sanitizeSchemaForStrictMode,
 	tryEnforceStrictSchema,
 } from "@oh-my-pi/pi-ai/utils/schema";
-import { isRecord, prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
+import { formatDuration, PREVIEW_LIMITS, previewLine } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { AbandonedJob } from "@oh-my-pi/pi-tui/tools/task";
+import { getActiveEvalJobId } from "../eval/speculation/runtime-context";
+import { hasLiveOwnedService, listServicesTolerant, stopService } from "../launch/services";
+import yieldWrongKeyTemplate from "../prompts/tools/yield-wrong-key.md" with { type: "text" };
+import yieldSiblingCallsMessage from "../prompts/tools/yield-sibling-calls.md" with { type: "text" };
 import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
 import yieldDataErrorConflictMessage from "../prompts/tools/yield-data-error-conflict.md" with { type: "text" };
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { ToolSession } from ".";
 import { buildOutputValidator, formatAllValidationIssues } from "./output-schema-validator";
+import yieldAlreadySubmittedMessage from "../prompts/tools/yield-already-submitted.md" with { type: "text" };
+import yieldResultNeedsDataTemplate from "../prompts/tools/yield-result-needs-data.md" with { type: "text" };
+import yieldRunningProcessesTemplate from "../prompts/tools/yield-running-processes.md" with { type: "text" };
+import yieldServicesUnverifiedTemplate from "../prompts/tools/yield-services-unverified.md" with { type: "text" };
+
+function previewRunningCommand(command: string): string {
+	return previewLine(sanitizeText(command), PREVIEW_LIMITS.RUNNING_COMMAND_WIDTH);
+}
 
 const YIELD_FORMAT_HINT = 'Submit success as {"data":<your output>} or failure as {"error":"message"}.';
 
+export type YieldEvidence = { commit: string } | { path: string } | { command: string };
+export interface YieldRequirement {
+	requirement: string;
+	done: boolean;
+	evidence: YieldEvidence;
+}
+export interface YieldBlocker {
+	kind: string;
+	evidence: YieldEvidence;
+}
+
 export interface YieldDetails {
+	requirements?: YieldRequirement[];
+	blocker?: YieldBlocker;
 	/** Successful result payload; omitted when a terminal `type` finalizes the submitted sections. */
 	data?: unknown;
 	status: "success" | "aborted";
 	error?: string;
 	/** Optional result section/classification supplied by the yield caller. */
 	type?: string | string[];
+	deconfliction?: unknown;
 	/** True when this incremental workpool yield completed every item in the active batch. */
 	complete?: boolean;
 	/**
@@ -39,7 +67,9 @@ export interface YieldDetails {
 	 * subagent's acceptance and the parent's view of the result in lockstep.
 	 */
 	schemaOverridden?: boolean;
+	abandonedJobs?: AbandonedJob[];
 }
+export type YieldAcceptedListener = (toolCallId: string, details: YieldDetails) => void;
 
 function formatSchema(schema: unknown): string {
 	if (schema === undefined) return "No schema provided.";
@@ -229,14 +259,19 @@ function withSectionVariants(dataSchema: Record<string, unknown>): Record<string
 	return description !== undefined ? { description, anyOf: branches } : { anyOf: branches };
 }
 
-function wrapWorkPoolYieldParameters(items: readonly WorkPoolYieldItem[]): Record<string, unknown> {
+function wrapWorkPoolYieldParameters(
+	items: readonly WorkPoolYieldItem[],
+	deconfliction?: unknown,
+): Record<string, unknown> {
 	return {
 		type: "object",
 		additionalProperties: false,
 		description: "submit one workpool item outcome",
 		properties: {
+			...(deconfliction ? { deconfliction } : {}),
 			key: {
-				enum: items.map(item => item.index),
+				type: "integer",
+				minimum: 1,
 				description: "1-based workpool item number",
 			},
 			data: { description: "Self-contained outcome and evidence for this item" },
@@ -266,6 +301,8 @@ function assertSupportedRootFields(parameters: TSchema, args: Record<string, unk
 	const declared = isRecord(parameters) && isRecord(parameters.properties) ? parameters.properties : {};
 	const unsupported: string[] = [];
 	for (const key in args) {
+		// The handover hook owns coordination metadata validation, including workpool results.
+		if (key === "deconfliction") continue;
 		if (args[key] != null && !Object.hasOwn(declared, key)) unsupported.push(key);
 	}
 	if (unsupported.length === 0) return;
@@ -274,6 +311,35 @@ function assertSupportedRootFields(parameters: TSchema, args: Record<string, unk
 			`Allowed root fields: ${formatYieldLabels(Object.keys(declared))}. Put the entire output inside \`data\`. ${YIELD_FORMAT_HINT}`,
 	);
 }
+
+const evidenceSchema = {
+	anyOf: ["commit", "path", "command"].map(key => ({
+		type: "object",
+		properties: { [key]: { type: "string", minLength: 1 } },
+		required: [key],
+		additionalProperties: false,
+	})),
+};
+const requirementsSchema = {
+	type: "array",
+	minItems: 1,
+	items: {
+		type: "object",
+		properties: {
+			requirement: { type: "string", minLength: 1 },
+			done: { type: "boolean" },
+			evidence: evidenceSchema,
+		},
+		required: ["requirement", "done", "evidence"],
+		additionalProperties: false,
+	},
+};
+const blockerSchema = {
+	type: "object",
+	properties: { kind: { type: "string", minLength: 1 }, evidence: evidenceSchema },
+	required: ["kind", "evidence"],
+	additionalProperties: false,
+};
 
 function buildYieldParameters(dataSchema: Record<string, unknown>): Record<string, unknown> {
 	// `data` xor `error`, and "omitted data requires a `type`", are enforced in
@@ -287,11 +353,27 @@ function buildYieldParameters(dataSchema: Record<string, unknown>): Record<strin
 		description: "submit data or error",
 		properties: {
 			type: yieldTypeSchema,
+			requirements: requirementsSchema,
+			blocker: blockerSchema,
 			data: dataSchema,
 			error: { type: "string", description: "Failure reason; mutually exclusive with data" },
 		},
 		required: [],
 	};
+}
+
+/**
+ * True when a terminal `type: "result"` payload carries no answer: missing
+ * (`undefined`; strict-mode `null` is already normalized to it), blank text,
+ * or an empty container (`[]`, `{}`). Genuine scalars (`0`, `false`) count as
+ * content — only provably answer-less payloads are rejected.
+ */
+function isEmptyResultData(value: unknown): boolean {
+	if (value === undefined) return true;
+	if (typeof value === "string") return value.trim().length === 0;
+	if (Array.isArray(value)) return value.length === 0;
+	if (isRecord(value)) return Object.keys(value).length === 0;
+	return false;
 }
 
 /**
@@ -311,9 +393,30 @@ const MAX_SCHEMA_RETRIES = 3;
  */
 const MAX_EMPTY_RESULT_RETRIES = 3;
 
+interface DeferredYieldAcceptance {
+	depth: number;
+	incremental?: boolean;
+	promise: Promise<void>;
+	resolve: () => void;
+	generation?: number;
+	listeners?: YieldAcceptedListener[];
+	details?: YieldDetails;
+	claimedTerminal?: boolean;
+}
+
+interface WorkPoolReservation {
+	itemId: string;
+	generation: number;
+	batchKey: string;
+	promise: Promise<void>;
+	resolve: () => void;
+}
+
 export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	readonly name = "yield";
 	readonly approval = "read" as const;
+	/** Read tier is authorization only; this tool must not run as a soft-requirement detour. */
+	readonly softRequirementDetour = false;
 	readonly label = "Submit Result";
 	readonly intent = "omit" as const;
 	lenientArgValidation = true;
@@ -328,11 +431,28 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	#schemaStrict = true;
 	#schemaValidationFailures = 0;
 	#emptyResultFailures = 0;
-	#hasIncrementalSections = false;
+	readonly #incrementalSections = new Set<string>();
+	get #hasIncrementalSections(): boolean {
+		return this.#incrementalSections.size > 0;
+	}
+	// A terminal acceptance closes submission for the current monitored run.
+	// Later yields in that run, including incremental sections, must not mutate
+	// its result. resetTurnState() re-arms the latch for the next monitored run.
+	#terminalResultCallId: string | undefined;
+	#finalResultForced = false;
+	get #terminalResultSubmitted(): boolean {
+		return this.#terminalResultCallId !== undefined;
+	}
+	#turnStateGeneration = 0;
 	readonly #session: ToolSession;
 	readonly #parameters: TSchema;
+	readonly #deconflictionSchema: unknown;
 	#workPoolBatchKey = "";
-	readonly #submittedWorkPoolItems = new Set<string>();
+	readonly #acceptedWorkPoolItems = new Set<string>();
+	readonly #workPoolReservations = new Map<string, WorkPoolReservation>();
+	readonly #warnedRunningJobs = new Set<string>();
+	readonly #acceptedResultListeners = new Set<YieldAcceptedListener>();
+	readonly #deferredAcceptances = new Map<string, DeferredYieldAcceptance>();
 
 	get strict(): boolean {
 		return this.#workPoolItems().length === 0 && this.#schemaStrict;
@@ -347,7 +467,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 	get parameters(): TSchema {
 		const items = this.#workPoolItems();
-		return items.length > 0 ? wrapWorkPoolYieldParameters(items) : this.#parameters;
+		return items.length > 0 ? wrapWorkPoolYieldParameters(items, this.#deconflictionSchema) : this.#parameters;
 	}
 
 	constructor(session: ToolSession) {
@@ -435,6 +555,22 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#rejectUnknownSections = rejectUnknownSections;
 		this.#knownSectionLabels = knownSectionLabels;
 		this.#isKnownSection = isKnownSection;
+		if (session.checkPeerHandover && isRecord(parameters.properties)) {
+			parameters.properties.deconfliction = {
+				type: "array",
+				items: {
+					type: "object",
+					properties: {
+						peer: { type: "string" },
+						resource: { type: "string" },
+						agreement: { type: "string" },
+					},
+					required: ["peer", "resource", "agreement"],
+					additionalProperties: false,
+				},
+			};
+		}
+		this.#deconflictionSchema = (parameters.properties as Record<string, unknown>).deconfliction;
 		this.#parameters = parameters;
 	}
 
@@ -449,9 +585,193 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	 * {@link #workPoolItems}.
 	 */
 	resetTurnState(): void {
-		this.#hasIncrementalSections = false;
+		this.#incrementalSections.clear();
 		this.#schemaValidationFailures = 0;
 		this.#emptyResultFailures = 0;
+		this.#warnedRunningJobs.clear();
+		this.#finalResultForced = false;
+		// Each monitored run (initial, follow-up, IRC wake) owns its own result;
+		// the executor's per-run monitor ignores yields from a settled run.
+		this.#terminalResultCallId = undefined;
+		// Fence late-arriving executions: an execute() that captured the previous
+		// generation before awaiting #checkRunningJobs must not mutate or notify
+		// the new run when it finally returns.
+		this.#turnStateGeneration++;
+		for (const pending of this.#deferredAcceptances.values()) pending.resolve();
+		for (const id of this.#workPoolReservations.keys()) this.#releaseWorkPoolReservation(id);
+	}
+
+	/** The driver's last reminder makes an incremental result terminal too. */
+	setFinalResultForced(forced: boolean): void {
+		this.#finalResultForced = forced;
+	}
+
+	/**
+	 * Subscribe to accepted yield results. The listener set is snapshotted at
+	 * execute() invocation start, so a stale execution from a detached run can
+	 * never notify the next run's monitor even if detach missed its unsubscribe.
+	 * Exposed through ExtensionToolWrapper's bound-method proxy like
+	 * resetTurnState. Returns an unsubscribe function with per-monitor lifetime.
+	 */
+	subscribeAcceptedResult(listener: YieldAcceptedListener): () => void {
+		this.#acceptedResultListeners.add(listener);
+		return () => {
+			this.#acceptedResultListeners.delete(listener);
+		};
+	}
+
+	/** Extensions may reject or downgrade a result; only the final wrapper commits it. */
+	deferResultAcceptance(toolCallId: string): (result?: AgentToolResult<unknown>) => void {
+		let pending = this.#deferredAcceptances.get(toolCallId);
+		if (!pending) {
+			pending = { depth: 0, generation: this.#turnStateGeneration, ...Promise.withResolvers<void>() };
+			this.#deferredAcceptances.set(toolCallId, pending);
+		}
+		pending.depth++;
+		return result => {
+			if (--pending.depth > 0) return;
+			this.#deferredAcceptances.delete(toolCallId);
+			try {
+				if (pending.generation !== this.#turnStateGeneration || !pending.details) return;
+				const details = result?.details as YieldDetails | undefined;
+				const accepted =
+					result?.isError !== true && (details?.status === "success" || details?.status === "aborted");
+				const terminal =
+					accepted && (details.status === "aborted" || !Array.isArray(details.type) || details.complete);
+				if (!terminal && pending.claimedTerminal) this.#terminalResultCallId = undefined;
+				if (!accepted) {
+					this.#incrementalSections.delete(toolCallId);
+					return;
+				}
+				this.#acceptWorkPoolItem(toolCallId, details);
+				if (!terminal) this.#incrementalSections.add(toolCallId);
+				for (const listener of pending.listeners ?? []) {
+					if (this.#acceptedResultListeners.has(listener)) listener(toolCallId, details);
+				}
+			} finally {
+				this.#releaseWorkPoolReservation(toolCallId);
+				pending.resolve();
+			}
+		};
+	}
+
+	#acceptWorkPoolItem(toolCallId: string, details: YieldDetails): void {
+		const reservation = this.#workPoolReservations.get(toolCallId);
+		if (
+			reservation &&
+			reservation.generation === this.#turnStateGeneration &&
+			reservation.batchKey === this.#workPoolBatchKey &&
+			details.status === "success" &&
+			Array.isArray(details.type) &&
+			details.type.includes(reservation.itemId)
+		) {
+			this.#acceptedWorkPoolItems.add(reservation.itemId);
+		}
+	}
+
+	#releaseWorkPoolReservation(toolCallId: string): void {
+		const reservation = this.#workPoolReservations.get(toolCallId);
+		this.#workPoolReservations.delete(toolCallId);
+		reservation?.resolve();
+	}
+
+	/**
+	 * One-shot latch for terminal results: the first accepted terminal result is
+	 * the run's answer and can never be replaced. Throws the stop instruction when
+	 * a later terminal yield reaches the accept point. The latch is reserved
+	 * before awaiting the running-job check so sibling terminal calls executing
+	 * concurrently cannot both be accepted; a refusal rolls the reservation back.
+	 * Only resetTurnState() (a new monitored run) clears it.
+	 */
+	async #claimTerminalResult(
+		toolCallId: string,
+		runGeneration: number,
+		signal?: AbortSignal,
+	): Promise<AbandonedJob[] | undefined> {
+		if (this.#terminalResultSubmitted) {
+			throw new Error(yieldAlreadySubmittedMessage.trim());
+		}
+		this.#terminalResultCallId = toolCallId;
+		try {
+			return await this.#checkRunningJobs(runGeneration, signal);
+		} catch (error) {
+			// A refusal releases only this run's reservation, never a successor's.
+			if (runGeneration === this.#turnStateGeneration) this.#terminalResultCallId = undefined;
+			throw error;
+		}
+	}
+
+	async #checkRunningJobs(runGeneration: number, signal?: AbortSignal): Promise<AbandonedJob[] | undefined> {
+		if (!this.#session.requireYieldTool) return;
+		const jobs: AbandonedJob[] = [];
+		const ownerId = this.#session.getAgentId?.() ?? undefined;
+		if (hasLiveOwnedService(this.#session)) {
+			const owner = this.#session.getSessionId?.() ?? ownerId;
+			const { services, error: listError } = await listServicesTolerant(this.#session, signal);
+			// Fail closed: an empty roster from a failed daemon request is not
+			// evidence that no owned service is running.
+			if (listError !== undefined) {
+				throw new Error(prompt.render(yieldServicesUnverifiedTemplate, { error: sanitizeText(listError) }).trim());
+			}
+			for (const service of services) {
+				if (
+					service.owner !== owner ||
+					service.policy.hold !== "leases" ||
+					service.state === "exited" ||
+					service.state === "failed"
+				)
+					continue;
+				jobs.push({
+					id: service.key,
+					type: "service",
+					command: previewRunningCommand(service.command ?? service.key),
+					startedAt: service.startedAt,
+					elapsedMs: Math.max(0, Date.now() - service.startedAt),
+				});
+			}
+		}
+		// Teardown reaps every owner job including foreground-backed and
+		// delivery-suppressed rows; the guard enumerates that same set.
+		for (const job of this.#session.asyncJobManager?.getRunningJobs({ ownerId }, { includeForeground: true }) ?? []) {
+			if (job.id === getActiveEvalJobId()) continue;
+			jobs.push({
+				id: job.id,
+				type: job.type,
+				command: previewRunningCommand(job.process?.command ?? job.label),
+				startedAt: job.startTime,
+				elapsedMs: Math.max(0, Date.now() - job.startTime),
+			});
+		}
+		if (jobs.length === 0) return;
+		const key = (job: AbandonedJob): string => `${job.type}:${job.id}:${job.startedAt}`;
+		if (jobs.some(job => !this.#warnedRunningJobs.has(key(job)))) {
+			// Service checks may outlive their run; keep the next run's first refusal intact.
+			if (runGeneration === this.#turnStateGeneration) {
+				for (const job of jobs) this.#warnedRunningJobs.add(key(job));
+			}
+			throw new Error(
+				prompt
+					.render(yieldRunningProcessesTemplate, {
+						jobs: jobs.map(job => ({ id: job.id, command: job.command, elapsed: formatDuration(job.elapsedMs) })),
+					})
+					.trim(),
+			);
+		}
+		for (const job of jobs) {
+			if (job.type === "service") await stopService(this.#session, job.id, signal);
+		}
+		return jobs;
+	}
+
+	/**
+	 * True when `data` is absent or empty AND the declared output schema (if any)
+	 * does not explicitly accept that empty value. A schema that legitimately
+	 * allows `[]`, `{}` or `""` keeps ownership of the verdict via `#validate`.
+	 */
+	#isEmptyTerminalData(data: unknown): boolean {
+		if (!isEmptyResultData(data)) return false;
+		if (data === undefined || this.#validate === undefined) return true;
+		return !this.#validate(data).success;
 	}
 
 	#workPoolItems(): readonly WorkPoolYieldItem[] {
@@ -459,25 +779,68 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		const key = items.map(item => `${item.index}:${item.id}`).join("\0");
 		if (key !== this.#workPoolBatchKey) {
 			this.#workPoolBatchKey = key;
-			this.#submittedWorkPoolItems.clear();
+			this.#acceptedWorkPoolItems.clear();
+			for (const id of this.#workPoolReservations.keys()) this.#releaseWorkPoolReservation(id);
 		}
 		return items;
 	}
 
 	async execute(
-		_toolCallId: string,
+		toolCallId: string,
 		params: unknown,
 		_signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<YieldDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<YieldDetails>> {
+		// Capture the run generation and listener identity at invocation start.
+		// An execute() that outlives its run (detached while awaiting
+		// #checkRunningJobs, then a new run resets and subscribes) must neither
+		// mutate the new run's accumulators nor notify its listeners on return.
+		const runGeneration = this.#turnStateGeneration;
+		const acceptedListeners = [...this.#acceptedResultListeners];
+		const result = await this.#execute(toolCallId, params, runGeneration, _signal, _context);
+		const deferred = this.#deferredAcceptances.get(toolCallId);
+		if (deferred) {
+			deferred.generation = runGeneration;
+			deferred.listeners = acceptedListeners;
+			deferred.details = result.details;
+			deferred.claimedTerminal = this.#terminalResultCallId === toolCallId;
+			return result;
+		}
+		try {
+			if (runGeneration === this.#turnStateGeneration && result.details !== undefined) {
+				this.#acceptWorkPoolItem(toolCallId, result.details);
+				for (const listener of acceptedListeners) {
+					if (this.#acceptedResultListeners.has(listener)) listener(toolCallId, result.details);
+				}
+			}
+		} finally {
+			this.#releaseWorkPoolReservation(toolCallId);
+		}
+		return result;
+	}
+
+	async #execute(
+		toolCallId: string,
+		params: unknown,
+		runGeneration: number,
+		_signal?: AbortSignal,
+		context?: AgentToolContext,
+	): Promise<AgentToolResult<YieldDetails>> {
+		if (this.#terminalResultSubmitted) {
+			throw new Error(yieldAlreadySubmittedMessage.trim());
+		}
 		if (!isRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
+		for (const [key, schema] of [
+			["requirements", requirementsSchema],
+			["blocker", blockerSchema],
+		] as const) {
+			if (raw[key] == null) continue;
+			const result = buildOutputValidator(schema).validator!.validate(raw[key]);
+			if (!result.success) throw new Error(`${key}: ${formatAllValidationIssues(result.issues)}`);
+		}
 		const workPoolItems = this.#workPoolItems();
-		assertSupportedRootFields(
-			workPoolItems.length > 0 ? wrapWorkPoolYieldParameters(workPoolItems) : this.#parameters,
-			raw,
-		);
 		let workPoolItemId: string | undefined;
 		let yieldType: string | string[] | undefined;
 		// Strict-mode providers send omitted optionals as `null`; treat it as absent.
@@ -486,7 +849,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		if (workPoolItems.length > 0) {
 			const item = resolveWorkPoolYieldItem(workPoolItems, raw.key);
 			workPoolItemId = item.id;
-			if (this.#submittedWorkPoolItems.has(item.id)) {
+			if (
+				this.#acceptedWorkPoolItems.has(item.id) ||
+				[...this.#workPoolReservations.values()].some(reservation => reservation.itemId === item.id)
+			) {
 				throw new Error(`workpool item ${item.index} was already submitted`);
 			}
 			if (data !== undefined && errorMessage !== undefined) {
@@ -508,10 +874,42 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				yieldType = "result";
 			}
 		}
+		const deconfliction = raw.deconfliction;
+		if (deconfliction != null && !this.#session.checkPeerHandover) {
+			throw new Error("yield arguments carry unsupported root field deconfliction; peer awareness is disabled");
+		}
 		// Incremental array-typed sections carry partial data (one finding, one
 		// field) that cannot satisfy the full output schema; the assembled result
 		// is validated as a whole at finalization (executor finalizeSubprocessOutput).
 		const isIncremental = Array.isArray(yieldType) && yieldType.length > 0;
+		if ((!isIncremental || workPoolItemId !== undefined) && this.#session.checkPeerHandover) {
+			const refusal = await this.#session.checkPeerHandover(deconfliction);
+			if (refusal) throw new Error(refusal);
+		}
+
+		const deferred = this.#deferredAcceptances.get(toolCallId);
+		if (deferred) deferred.incremental = isIncremental && errorMessage === undefined && !this.#finalResultForced;
+		// Drain sections admitted while a previous result extension was pending too.
+		// Later terminal calls remain excluded so sibling closes cannot wait on each other.
+		if (workPoolItems.length === 0 && (!isIncremental || errorMessage !== undefined || this.#finalResultForced)) {
+			for (;;) {
+				const predecessors: Promise<void>[] = [];
+				let later = false;
+				for (const [id, pending] of this.#deferredAcceptances) {
+					if (id === toolCallId) {
+						later = true;
+						continue;
+					}
+					if (pending.generation === runGeneration && (!later || pending.incremental))
+						predecessors.push(pending.promise);
+				}
+				if (predecessors.length === 0) break;
+				await untilAborted(_signal, Promise.all(predecessors));
+				if (runGeneration !== this.#turnStateGeneration || this.#terminalResultSubmitted) {
+					throw new Error(yieldAlreadySubmittedMessage.trim());
+				}
+			}
+		}
 
 		if (errorMessage !== undefined && data !== undefined) {
 			throw new Error(renderDataErrorConflictMessage(errorMessage, yieldType));
@@ -531,6 +929,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				const attemptCount = this.#emptyResultFailures;
 				this.#emptyResultFailures = 0;
 				const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+				const abandonedJobs =
+					workPoolItems.length === 0 && !isIncremental
+						? await this.#claimTerminalResult(toolCallId, runGeneration, _signal)
+						: undefined;
 				return {
 					content: [{ type: "text", text: `Task aborted: ${error}` }],
 					details: {
@@ -538,10 +940,31 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 						status: "aborted",
 						error,
 						type: yieldType,
+						abandonedJobs,
 					},
 				};
 			}
 			const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
+			if (!isIncremental && workPoolItems.length === 0) {
+				// The answer under a stray top-level key (`result`, `output`, …) or a bare terminal
+				// `type: "result"` gets the specific resubmission hint rather than the generic one.
+				const strayKey = Object.keys(raw).find(
+					key =>
+						key !== "type" &&
+						key !== "data" &&
+						key !== "error" &&
+						(raw as Record<string, unknown>)[key] !== null &&
+						!isEmptyResultData((raw as Record<string, unknown>)[key]),
+				);
+				if (strayKey !== undefined)
+					throw new Error(
+						prompt.render(yieldWrongKeyTemplate, { strayKey, formatHint: YIELD_FORMAT_HINT, remaining }).trim(),
+					);
+				if (yieldType === "result")
+					throw new Error(
+						`${prompt.render(yieldResultNeedsDataTemplate, { formatHint: YIELD_FORMAT_HINT, remaining }).trim()} A data-less \`type\` only finalizes previously submitted sections, and none were submitted.`,
+					);
+			}
 			const reason = isIncremental
 				? `Section ${formatYieldLabels(yieldType as string[])} carries no \`data\`.`
 				: yieldType !== undefined
@@ -554,6 +977,94 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		if (workPoolItemId !== undefined && errorMessage !== undefined) data = { error: errorMessage };
 		let schemaValidationOverridden = false;
 		let schemaValidationFailureCount = 0;
+		// A terminal `type: "result"` yield is the run's answer, so it must carry
+		// it in `data`. Without this, a data-less or explicitly empty (`""`, `{}`,
+		// `[]`) result is accepted as completed with an empty result and the real
+		// answer — e.g. a verdict table left in assistant text — is lost with no
+		// retry. Bounce it in-band so the model resubmits with the payload.
+		// Untouched: error yields (`type: "error"` takes the aborted path),
+		// incremental sections, workpool items, and a data-less close of
+		// accumulated sections.
+		if (
+			status === "success" &&
+			!isIncremental &&
+			workPoolItems.length === 0 &&
+			(yieldType === "result" || (typeof yieldType === "string" && data !== undefined)) &&
+			this.#isEmptyTerminalData(data)
+		) {
+			const closesIncrementalFlow = data === undefined && this.#hasIncrementalSections;
+			if (!closesIncrementalFlow) {
+				this.#emptyResultFailures++;
+				if (this.#emptyResultFailures > MAX_EMPTY_RESULT_RETRIES) {
+					const attemptCount = this.#emptyResultFailures;
+					this.#emptyResultFailures = 0;
+					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+					const abandonedJobs = await this.#claimTerminalResult(toolCallId, runGeneration, _signal);
+					return {
+						content: [{ type: "text", text: `Task aborted: ${error}` }],
+						details: {
+							data: undefined,
+							status: "aborted",
+							error,
+							type: yieldType,
+							abandonedJobs,
+						},
+					};
+				}
+				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
+				throw new Error(
+					prompt.render(yieldResultNeedsDataTemplate, { formatHint: YIELD_FORMAT_HINT, remaining }).trim(),
+				);
+			}
+		}
+		// A success yield with no accumulated sections must carry its answer in `data`.
+		// A stray non-empty top-level key (`result`, `output`, `answer`) with `data`
+		// missing is the answer under the wrong key, so bounce it. An untyped yield whose `data` is explicitly
+		// empty bounces the same way the typed result does.
+		if (status === "success" && !isIncremental && workPoolItems.length === 0) {
+			const strayKey =
+				data === undefined
+					? Object.keys(raw).find(
+							key =>
+								key !== "type" &&
+								key !== "data" &&
+								key !== "error" &&
+								raw[key] !== null &&
+								!isEmptyResultData(raw[key]),
+						)
+					: undefined;
+			const emptyUntyped = yieldType === undefined && data !== undefined && this.#isEmptyTerminalData(data);
+			if (strayKey !== undefined || emptyUntyped) {
+				this.#emptyResultFailures++;
+				if (this.#emptyResultFailures > MAX_EMPTY_RESULT_RETRIES) {
+					const attemptCount = this.#emptyResultFailures;
+					this.#emptyResultFailures = 0;
+					const error = `yield result stayed empty after ${attemptCount} consecutive attempt(s); aborting child instead of retrying forever. ${YIELD_FORMAT_HINT}`;
+					const abandonedJobs = await this.#claimTerminalResult(toolCallId, runGeneration, _signal);
+					return {
+						content: [{ type: "text", text: `Task aborted: ${error}` }],
+						details: {
+							data: undefined,
+							status: "aborted",
+							error,
+							type: yieldType,
+							abandonedJobs,
+						},
+					};
+				}
+				const remaining = MAX_EMPTY_RESULT_RETRIES - this.#emptyResultFailures;
+				throw new Error(
+					prompt.render(yieldWrongKeyTemplate, { strayKey, formatHint: YIELD_FORMAT_HINT, remaining }).trim(),
+				);
+			}
+		}
+		// Root fields the schema does not declare are payload the model put beside
+		// `data`; refuse them rather than publish a reduced success (#16317). The wrong-key
+		// bounce above runs first: it owns the answer-under-a-stray-key case and its retry budget.
+		assertSupportedRootFields(
+			workPoolItems.length > 0 ? wrapWorkPoolYieldParameters(workPoolItems) : this.#parameters,
+			raw,
+		);
 		// Unknown incremental labels are a hard contract mismatch with the closed caller
 		// schema: `type: ["findings"], data: {}` would otherwise be accepted as a
 		// section the assembled result can never carry, then a sibling
@@ -615,6 +1126,11 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			}
 			if (sectionFailure && !sectionFailure.success) {
 				this.#schemaValidationFailures++;
+				if (this.#session.outputSchemaMode === "strict") {
+					throw new Error(
+						`Output does not match schema: ${formatAllValidationIssues(sectionFailure.issues)}. Nothing was submitted. Expected schema:\n${formatSchema(this.#session.outputSchema)}`,
+					);
+				}
 				if (this.#schemaValidationFailures <= MAX_SCHEMA_RETRIES) {
 					const remaining = MAX_SCHEMA_RETRIES - this.#schemaValidationFailures;
 					const retryHint =
@@ -646,15 +1162,54 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			}
 		}
 
-		this.#emptyResultFailures = 0;
-		if (status === "success" && isIncremental) this.#hasIncrementalSections = true;
+		// Reserve keys until the outermost result wrapper accepts or rejects them.
+		// Earlier accepted notifications must land before a sibling can complete the batch.
+		const batchKey = this.#workPoolBatchKey;
+		const predecessors = [...this.#workPoolReservations.values()];
+		if (workPoolItemId !== undefined) {
+			this.#workPoolReservations.set(toolCallId, {
+				itemId: workPoolItemId,
+				generation: runGeneration,
+				batchKey,
+				...Promise.withResolvers<void>(),
+			});
+		}
+		let abandonedJobs: AbandonedJob[] | undefined;
+		try {
+			if (workPoolItemId !== undefined)
+				await untilAborted(_signal, Promise.all(predecessors.map(reservation => reservation.promise)));
+			const completesWorkPool =
+				workPoolItemId !== undefined &&
+				workPoolItems.every(item => item.id === workPoolItemId || this.#acceptedWorkPoolItems.has(item.id));
+			if (
+				(!isIncremental || completesWorkPool || status === "aborted" || this.#finalResultForced) &&
+				context?.toolCall?.toolCalls.some(call => call.id !== toolCallId && call.name !== "yield")
+			) {
+				throw new Error(yieldSiblingCallsMessage.trim());
+			}
+			abandonedJobs =
+				workPoolItems.length === 0 && (!isIncremental || status === "aborted" || this.#finalResultForced)
+					? await this.#claimTerminalResult(toolCallId, runGeneration, _signal)
+					: status === "aborted" || completesWorkPool
+						? await this.#checkRunningJobs(runGeneration, _signal)
+						: undefined;
+		} catch (error) {
+			this.#releaseWorkPoolReservation(toolCallId);
+			throw error;
+		}
+		// A stale execution from a detached run must not mutate the new run's
+		// accumulators: skip them when the generation moved during the awaits above.
+		const staleAcceptedResult = runGeneration !== this.#turnStateGeneration;
+		if (!staleAcceptedResult) this.#emptyResultFailures = 0;
+		if (!staleAcceptedResult && status === "success" && isIncremental) this.#incrementalSections.add(toolCallId);
 		let workPoolComplete = false;
 		let submittedWorkPoolItem: WorkPoolYieldItem | undefined;
 		let remainingWorkPoolItems: readonly WorkPoolYieldItem[] = [];
 		if (workPoolItemId !== undefined) {
 			submittedWorkPoolItem = workPoolItems.find(item => item.id === workPoolItemId);
-			this.#submittedWorkPoolItems.add(workPoolItemId);
-			remainingWorkPoolItems = workPoolItems.filter(item => !this.#submittedWorkPoolItems.has(item.id));
+			remainingWorkPoolItems = workPoolItems.filter(
+				item => item.id !== workPoolItemId && !this.#acceptedWorkPoolItems.has(item.id),
+			);
 			workPoolComplete = remainingWorkPoolItems.length === 0;
 		}
 		const responseText =
@@ -671,11 +1226,15 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			content: [{ type: "text", text: responseText }],
 			details: {
 				data,
+				...(raw.requirements != null ? { requirements: raw.requirements as YieldRequirement[] } : {}),
+				...(raw.blocker != null ? { blocker: raw.blocker as YieldBlocker } : {}),
 				status,
 				error: errorMessage,
 				type: yieldType,
-				complete: workPoolComplete || undefined,
+				deconfliction,
+				complete: workPoolComplete || this.#finalResultForced || undefined,
 				schemaOverridden: schemaValidationOverridden || undefined,
+				abandonedJobs,
 			},
 		};
 	}
@@ -729,6 +1288,31 @@ export function resetYieldTurnState(tool: AgentTool | undefined): void {
 	if (tool && canResetTurnState(tool)) tool.resetTurnState();
 }
 
+/** Keep the driver and the tool's acceptance latch on the same terminal boundary. */
+export function setYieldFinalResultForced(tool: AgentTool | undefined, forced: boolean): void {
+	if (tool && "setFinalResultForced" in tool && typeof tool.setFinalResultForced === "function") {
+		tool.setFinalResultForced(forced);
+	}
+}
+
+interface AcceptedResultSubscribable {
+	subscribeAcceptedResult(listener: YieldAcceptedListener): () => void;
+}
+
+function canSubscribeAcceptedResult(tool: AgentTool): tool is AgentTool & AcceptedResultSubscribable {
+	return "subscribeAcceptedResult" in tool && typeof tool.subscribeAcceptedResult === "function";
+}
+
+/**
+ * Subscribe to a yield tool's accepted results through either a native tool or
+ * an `ExtensionToolWrapper` proxy (bound-method forwarding). Missing or dynamic
+ * replacement tools without this producer have no subscription.
+ */
+export function subscribeYieldAcceptedResult(tool: AgentTool | undefined, listener: YieldAcceptedListener): () => void {
+	if (tool && canSubscribeAcceptedResult(tool)) return tool.subscribeAcceptedResult(listener);
+	return () => {};
+}
+
 // Register subprocess tool handler for extraction + termination.
 subprocessToolRegistry.register<YieldDetails>("yield", {
 	extractData: event => {
@@ -739,11 +1323,15 @@ subprocessToolRegistry.register<YieldDetails>("yield", {
 		if (status !== "success" && status !== "aborted") return undefined;
 		return {
 			data: record.data,
+			...(record.requirements ? { requirements: record.requirements as YieldRequirement[] } : {}),
+			...(record.blocker ? { blocker: record.blocker as YieldBlocker } : {}),
 			status,
 			error: typeof record.error === "string" ? record.error : undefined,
 			type: isYieldType(record.type) ? record.type : undefined,
+			deconfliction: record.deconfliction,
 			complete: record.complete === true ? true : undefined,
 			schemaOverridden: record.schemaOverridden === true ? true : undefined,
+			abandonedJobs: Array.isArray(record.abandonedJobs) ? (record.abandonedJobs as AbandonedJob[]) : undefined,
 		};
 	},
 	shouldTerminate: event => {

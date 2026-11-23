@@ -1,11 +1,29 @@
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoPersistedEdit, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import {
+	getCompletionTargets,
+	getRequirementRowArtifact,
+	getTodoRowChanges,
 	applyOpsToPhases,
+	buildTodoOpPersistedEdit,
 	getLatestTodoPhasesFromEntries,
+	getLatestTodoSnapshotIdentity,
+	formatTodoView,
 	markdownToPhases,
+	preserveTodoMetadata,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+	getLiveTodoBranchEntries,
 } from "../../tools/todo";
+import {
+	appendRequirementsSnapshot,
+	evaluateRequirementDoneGate,
+	formatDoneGateRefusal,
+	getLatestRequirements,
+	getPersistedRequirementAuditRejections,
+	invalidateStaleRequirementVerdicts,
+	parseRequirementsLedger,
+} from "../../tools/requirements-ledger";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime } from "../types";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./parse";
 
@@ -90,17 +108,107 @@ function findTaskFuzzy(phases: TodoPhase[], query: string): TodoTaskMatch | unde
 }
 
 function currentPhases(runtime: SlashCommandRuntime): TodoPhase[] {
-	const fromEntries = getLatestTodoPhasesFromEntries(runtime.sessionManager.getBranch());
-	return fromEntries.length > 0 ? fromEntries : runtime.session.getTodoPhases();
+	const entries = getLiveTodoBranchEntries(runtime.sessionManager);
+	// A saved snapshot with zero live phases is authoritative (all rows
+	// archived); only an entirely absent transcript falls back to session state.
+	if (getLatestTodoSnapshotIdentity(entries) !== undefined) return getLatestTodoPhasesFromEntries(entries);
+	return runtime.session.getTodoPhases();
 }
 
-function commitTodos(runtime: SlashCommandRuntime, phases: TodoPhase[]): void {
-	runtime.session.commitTodoPhases(phases);
+function commitTodos(runtime: SlashCommandRuntime, phases: TodoPhase[], edit?: TodoPersistedEdit): void {
+	runtime.session.setTodoPhases(phases);
+	runtime.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, edit ? { edit } : { phases });
+}
+
+async function completionRefusal(
+	runtime: SlashCommandRuntime,
+	current: TodoPhase[],
+	selector: { task?: string; phase?: string; items?: string[] },
+): Promise<string | undefined> {
+	const errors: string[] = [];
+	const targets = getCompletionTargets(current, selector, errors);
+	if (errors.length > 0) return undefined;
+	const branch = runtime.sessionManager.getBranch();
+	const requirements = getLatestRequirements(branch);
+	if (requirements.length === 0) return undefined;
+	const phasesSnapshot = JSON.stringify(current);
+	const requirementsSnapshot = JSON.stringify(requirements);
+	const changes = getTodoRowChanges(branch);
+	const open = await evaluateRequirementDoneGate(
+		requirements,
+		targets.map(target => target.content),
+		async (row, receipt) => ({
+			...(await getRequirementRowArtifact(
+				{
+					cwd: runtime.sessionManager.getCwd(),
+					sessionManager: runtime.sessionManager,
+					receipt,
+					signal: runtime.signal,
+				},
+				row,
+				current,
+			)),
+			lastChange: changes.get(row),
+		}),
+		getPersistedRequirementAuditRejections(branch, runtime.sessionManager.getHeader()?.id ?? null),
+		new Set(),
+		new Set(
+			current.flatMap(phase => phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content)),
+		),
+	);
+	if (
+		JSON.stringify(currentPhases(runtime)) !== phasesSnapshot ||
+		JSON.stringify(getLatestRequirements(runtime.sessionManager.getBranch())) !== requirementsSnapshot
+	)
+		return "TODO or requirement evidence changed while the audit check was running; no change was applied. Retry against the current state.";
+	const invalidated = invalidateStaleRequirementVerdicts(requirements, open);
+	if (
+		invalidated.some((requirement, index) => requirement !== requirements[index]) &&
+		parseRequirementsLedger({ version: 1, requirements: invalidated })
+	) {
+		appendRequirementsSnapshot(
+			{ appendEntry: (customType, data) => runtime.sessionManager.appendCustomEntry(customType, data) },
+			invalidated,
+		);
+	}
+	return open.every(item => item.issues.length === 0) ? undefined : formatDoneGateRefusal(open);
+}
+
+async function removalRefusal(
+	runtime: SlashCommandRuntime,
+	current: TodoPhase[],
+	next: TodoPhase[],
+): Promise<string | undefined> {
+	const remaining = new Set(next.flatMap(phase => phase.tasks.map(task => task.content)));
+	const existing = new Map(current.flatMap(phase => phase.tasks.map(task => [task.content, task] as const)));
+	const removed = [
+		...new Set(
+			getLatestRequirements(runtime.sessionManager.getBranch())
+				.filter(requirement => requirement.classification === "linked")
+				.flatMap(requirement => requirement.rows.filter(row => existing.has(row) && !remaining.has(row))),
+		),
+	];
+	const unfinished = removed.find(row => existing.get(row)?.status !== "completed");
+	if (unfinished)
+		return `Cannot remove unfinished requirement-linked TODO row ${JSON.stringify(unfinished)}. Complete and audit it first, or relink its requirement to a replacement row.`;
+	const newlyCompleted = next
+		.flatMap(phase => phase.tasks)
+		.filter(
+			task =>
+				task.status === "completed" &&
+				existing.has(task.content) &&
+				existing.get(task.content)?.status !== "completed",
+		)
+		.map(task => task.content);
+	const audited = [...new Set([...removed, ...newlyCompleted])];
+	if (audited.length === 0) return undefined;
+	return await completionRefusal(runtime, current, { items: audited });
 }
 
 const TODO_HELP_TEXT = [
 	"Usage: /todo <verb> [args]",
-	"  /todo                              Show current todos",
+	"  /todo                              Show open todos (status, owner, ETA, critical)",
+	"  /todo all                          Show every todo, closed ones included",
 	"  /todo edit                         (TUI only) open in $EDITOR",
 	"  /todo copy                         Print todos as Markdown",
 	"  /todo expand                       (TUI only) expand the sticky HUD",
@@ -116,7 +224,7 @@ const TODO_HELP_TEXT = [
 
 async function handleTodoCopyCommand(runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const phases = currentPhases(runtime);
-	const markdown = phases.length === 0 ? "" : phasesToMarkdown(phases).trimEnd();
+	const markdown = phases.length === 0 ? "" : phasesToMarkdown(phases, { metadata: false }).trimEnd();
 	await runtime.output(`Copy not available in ACP mode; printing instead:\n\n${markdown || "No todos."}`);
 	return commandConsumed();
 }
@@ -139,6 +247,8 @@ async function handleTodoExportCommand(restArgs: string, runtime: SlashCommandRu
 }
 
 async function handleTodoImportCommand(restArgs: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+	const current = currentPhases(runtime);
+	const beforeSnapshot = JSON.stringify(current);
 	let target: string;
 	let content: string;
 	try {
@@ -149,8 +259,21 @@ async function handleTodoImportCommand(restArgs: string, runtime: SlashCommandRu
 	}
 	const { phases, errors } = markdownToPhases(content);
 	if (errors.length > 0) return usage(`Could not parse ${target}:\n  ${errors.join("\n  ")}`, runtime);
-	commitTodos(runtime, phases);
-	const taskCount = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
+	if (JSON.stringify(currentPhases(runtime)) !== beforeSnapshot)
+		return usage(
+			"The TODO list changed during import; no change was applied. Retry against the current list.",
+			runtime,
+		);
+	const preserved = preserveTodoMetadata(current, phases);
+	const refusal = await removalRefusal(runtime, current, preserved);
+	if (refusal) return usage(refusal, runtime);
+	if (JSON.stringify(currentPhases(runtime)) !== beforeSnapshot)
+		return usage(
+			"The TODO list changed during import; no change was applied. Retry against the current list.",
+			runtime,
+		);
+	commitTodos(runtime, preserved);
+	const taskCount = preserved.reduce((sum, phase) => sum + phase.tasks.length, 0);
 	await runtime.output(`Imported ${phases.length} phase(s), ${taskCount} task(s) from ${target}.`);
 	return commandConsumed();
 }
@@ -178,7 +301,11 @@ async function handleTodoAppendCommand(restArgs: string, runtime: SlashCommandRu
 
 	const finalContent = titleCaseSentence(content);
 	targetPhase.tasks.push({ content: finalContent, status: "pending" });
-	commitTodos(runtime, next);
+	commitTodos(
+		runtime,
+		next,
+		buildTodoOpPersistedEdit("append", { op: "append", phase: targetPhase.name, items: [finalContent] }),
+	);
 	await runtime.output(`Appended to ${targetPhase.name}: ${finalContent}`);
 	return commandConsumed();
 }
@@ -189,8 +316,9 @@ async function handleTodoStartCommand(restArgs: string, runtime: SlashCommandRun
 	const query = tokenize(restArgs).join(" ") || restArgs;
 	const hit = findTaskFuzzy(current, query);
 	if (!hit) return usage(`No task matched "${restArgs}". Use /todo to list current tasks.`, runtime);
-	const { phases } = applyOpsToPhases(current, [{ op: "start", task: hit.task.content }]);
-	commitTodos(runtime, phases);
+	const op = { op: "start" as const, task: hit.task.content };
+	const { phases } = applyOpsToPhases(current, [op]);
+	commitTodos(runtime, phases, buildTodoOpPersistedEdit("start", op));
 	await runtime.output(`Started: ${hit.task.content}`);
 	return commandConsumed();
 }
@@ -201,23 +329,60 @@ async function handleTodoMutationCommand(
 	runtime: SlashCommandRuntime,
 ): Promise<SlashCommandResult> {
 	const current = currentPhases(runtime);
+	const beforeSnapshot = JSON.stringify(current);
+	const query = restArgs.trim();
+	const task = query ? findTaskFuzzy(current, query) : undefined;
+	const phase = query && !task ? findPhaseFuzzy(current, query) : undefined;
+	const selector = task
+		? { task: task.task.content }
+		: phase
+			? { phase: phase.name }
+			: { items: current.flatMap(phase => phase.tasks.map(task => task.content)) };
+	if (!query || task || phase) {
+		const refusal =
+			verb === "done"
+				? await completionRefusal(runtime, current, selector)
+				: verb === "rm"
+					? await removalRefusal(runtime, current, applyOpsToPhases(current, [{ op: verb, ...selector }]).phases)
+					: undefined;
+		if (refusal) return usage(refusal, runtime);
+		if (JSON.stringify(currentPhases(runtime)) !== beforeSnapshot)
+			return usage(
+				"The TODO list changed while the audit check was running; no change was applied. Retry against the current list.",
+				runtime,
+			);
+	}
 	const trimmedArg = restArgs.trim();
 	if (!trimmedArg) {
 		if (verb === "rm") {
-			commitTodos(runtime, []);
+			const op = { op: "rm" as const };
+			commitTodos(runtime, [], buildTodoOpPersistedEdit("rm", op));
 			await runtime.output("Cleared all todos.");
 			return commandConsumed();
 		}
-		const { phases } = applyOpsToPhases(current, [{ op: verb }]);
-		commitTodos(runtime, phases);
+		// The tool refuses a bare done/drop so the model names its rows; the user's command names
+		// every open row explicitly.
+		const items = current
+			.flatMap(phase => phase.tasks)
+			.filter(task => task.status !== "completed" && task.status !== "abandoned")
+			.map(task => task.content);
+		if (items.length === 0) {
+			await runtime.output("No open tasks.");
+			return commandConsumed();
+		}
+		const op = { op: verb, items };
+		const { phases, errors } = applyOpsToPhases(current, [op]);
+		if (errors.length > 0) return usage(errors.join("; "), runtime);
+		commitTodos(runtime, phases, buildTodoOpPersistedEdit(verb, op));
 		await runtime.output(verb === "done" ? "Marked all tasks completed." : "Marked all tasks abandoned.");
 		return commandConsumed();
 	}
 
 	const taskHit = findTaskFuzzy(current, trimmedArg);
 	if (taskHit) {
-		const { phases } = applyOpsToPhases(current, [{ op: verb, task: taskHit.task.content }]);
-		commitTodos(runtime, phases);
+		const op = { op: verb, task: taskHit.task.content };
+		const { phases } = applyOpsToPhases(current, [op]);
+		commitTodos(runtime, phases, buildTodoOpPersistedEdit(verb, op));
 		const label = verb === "done" ? "Marked completed" : verb === "drop" ? "Marked abandoned" : "Removed";
 		await runtime.output(`${label}: ${taskHit.task.content}`);
 		return commandConsumed();
@@ -225,8 +390,9 @@ async function handleTodoMutationCommand(
 
 	const phaseHit = findPhaseFuzzy(current, trimmedArg);
 	if (phaseHit) {
-		const { phases } = applyOpsToPhases(current, [{ op: verb, phase: phaseHit.name }]);
-		commitTodos(runtime, phases);
+		const op = { op: verb, phase: phaseHit.name };
+		const { phases } = applyOpsToPhases(current, [op]);
+		commitTodos(runtime, phases, buildTodoOpPersistedEdit(verb, op));
 		const message =
 			verb === "done"
 				? `Marked phase ${phaseHit.name} completed.`
@@ -246,10 +412,12 @@ export async function handleTodoAcp(
 	runtime: SlashCommandRuntime,
 ): Promise<SlashCommandResult> {
 	const trimmed = command.args.trim();
-	if (!trimmed) {
+	if (!trimmed || trimmed.toLowerCase() === "all") {
 		const phases = currentPhases(runtime);
 		await runtime.output(
-			phases.length === 0 ? "No todos. Use /todo append <task> to start one." : phasesToMarkdown(phases).trimEnd(),
+			phases.length === 0
+				? "No todos. Use /todo append <task> to start one."
+				: formatTodoView(phases, { all: trimmed.toLowerCase() === "all" }),
 		);
 		return commandConsumed();
 	}

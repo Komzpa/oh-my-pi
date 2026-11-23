@@ -37,6 +37,8 @@ import { TerminalGraphicsDecoder } from "../utils/terminal-graphics";
 import { appendImageLinks } from "../utils/image-temp";
 import { loadDirenvEnv } from "./direnv";
 import { buildNonInteractiveEnv } from "./non-interactive-env";
+import { DESKTOP_SESSION_ENV_KEYS, ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
+import { toolSessionEnvironment } from "./session-slice";
 
 import {
 	cfgBashDirenv,
@@ -61,6 +63,8 @@ export interface BashExecutorOptions {
 	signal?: AbortSignal;
 	/** Session key suffix to isolate shell sessions per agent */
 	sessionKey?: string;
+	/** Transcript session owning local processes, independent of the shell/job key. */
+	sessionId?: string;
 	/**
 	 * Session key whose persistent shell a new shell for `sessionKey` starts as a copy of
 	 * (variables, functions, aliases, options); what the run sets stays in the copy.
@@ -68,6 +72,8 @@ export interface BashExecutorOptions {
 	seedSessionKey?: string;
 	/** Additional environment variables to inject */
 	env?: Record<string, string>;
+	/** Strip desktop-session bindings for task workers. */
+	maskDesktopSession?: boolean;
 	/** Run through the configured user shell instead of the embedded shell parsing directly. */
 	useUserShell?: boolean;
 	/** Run supported user shells (zsh/fish) on a headless PTY; requires `useUserShell`. */
@@ -739,9 +745,14 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	const baseShellConfig = settings.getShellConfig();
 	const shellConfig =
 		options?.useUserShell === true ? resolveUserShellConfig(settings, baseShellConfig) : baseShellConfig;
-	const { shell, args, env: shellEnv, prefix } = shellConfig;
+	const { shell, args, env: baseShellEnv, prefix } = shellConfig;
+	// Task workers must not inherit the user's desktop session (grievance 608):
+	// drop WAYLAND_DISPLAY/DISPLAY/DBUS_SESSION_BUS_ADDRESS and point
+	// XDG_RUNTIME_DIR at a per-worker private dir. The main session keeps `baseShellEnv`.
+	const shellEnv = options?.maskDesktopSession
+		? stripDesktopSessionEnv(baseShellEnv, ensureSubagentRuntimeDir(options?.sessionKey ?? "subagent"))
+		: baseShellEnv;
 	const bashShell = isBashShell(shell);
-	// `!` hotkey commands on zsh/fish run in a real PTY: interactive shell
 	// startup (zle, job control, gitstatus) needs a TTY, and tools only emit
 	// color when stdout is one. bash keeps the snapshot + embedded-shell path;
 	// `cd` keeps the persistent shell so the session cwd can follow it.
@@ -778,7 +789,13 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			commandPrefix: prefix,
 		}),
 	]);
-	const commandEnv = buildNonInteractiveEnv(preflight.env, { inheritLocale: options?.useUserShell === true });
+	const commandEnv = await toolSessionEnvironment(options?.sessionId, {
+		...buildNonInteractiveEnv(preflight.env, { inheritLocale: options?.useUserShell === true }),
+		PATH: preflight.env?.PATH ?? shellEnv.PATH ?? process.env.PATH ?? "",
+	});
+	if (options?.maskDesktopSession) {
+		commandEnv.XDG_RUNTIME_DIR ??= shellEnv.XDG_RUNTIME_DIR;
+	}
 	const runCdInPersistentShell = options?.useUserShell === true && !prefix && isPersistentShellCdCommand(command);
 	// Never wrap in cmd.exe: it is only the Windows no-bash fallback for spawn
 	// paths, and the embedded shell runs the POSIX line better directly.
@@ -869,6 +886,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		: shellEnv;
 	const shellOptions = {
 		sessionEnv,
+		unsetEnv: options?.maskDesktopSession ? [...DESKTOP_SESSION_ENV_KEYS, "XDG_RUNTIME_DIR"] : undefined,
 		snapshotPath: snapshotPath ?? undefined,
 		minimizer,
 	};

@@ -261,6 +261,8 @@ export type State = Assert<
 		todoItem: Outbound<TodoItem, Wire.TodoItem>;
 		todoPhaseInbound: Inbound<Wire.TodoPhase, TodoPhase>;
 		todoItemInbound: Inbound<Wire.TodoItem, TodoItem>;
+		todoAwaitingUser: Outbound<NonNullable<TodoItem["awaitingUser"]>, Wire.TodoAwaitingUser>;
+		todoAwaitingUserInbound: Inbound<Wire.TodoAwaitingUser, NonNullable<TodoItem["awaitingUser"]>>;
 		goal: Outbound<Goal, Wire.Goal>;
 		modelPickerRow: Outbound<RpcModelPickerRow, Wire.ModelPickerRow>;
 		modelPickerRole: Outbound<RpcModelPickerRole, Wire.ModelPickerRole>;

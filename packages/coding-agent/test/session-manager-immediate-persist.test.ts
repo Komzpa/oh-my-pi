@@ -311,7 +311,7 @@ describe("SessionManager JSONL software-crash durability", () => {
 		const sessionFile = manager.getSessionFile();
 		if (!sessionFile) throw new Error("Expected session file");
 
-		const rewrite = manager.rewriteEntries();
+		const rewrite = manager.rewriteEntries({ forceFullRewrite: true });
 		await storage.rewriteStarted.promise;
 
 		manager.appendMessage({ role: "user", content: "fenced-user", timestamp: Date.now() });
@@ -389,7 +389,7 @@ describe("SessionManager JSONL software-crash durability", () => {
 		}
 	});
 
-	it("reparents metadata children and keeps billed usage when durably discarding an entry", async () => {
+	it("copies metadata children and keeps billed usage when durably discarding an entry", async () => {
 		const cwd = makeTempDir("@pi-discard-metadata-cwd-");
 		const sessionDir = path.join(cwd, "sessions");
 		const manager = SessionManager.create(cwd, sessionDir);
@@ -407,22 +407,16 @@ describe("SessionManager JSONL software-crash durability", () => {
 		const reloaded = await SessionManager.open(sessionFile, sessionDir);
 		const branch = reloaded.getBranch();
 		expect(branch.some(entry => entry.id === discardedId)).toBe(false);
-		expect(branch).toContainEqual(expect.objectContaining({ id: serviceTierId, parentId: priorId }));
-		expect(branch.some(entry => entry.type === "model_usage")).toBe(false);
-		expect(reloaded.getEntries()).toContainEqual(
-			expect.objectContaining({
-				type: "model_usage",
-				parentId: serviceTierId,
-				provider: discarded.provider,
-				model: discarded.model,
-				usage: discarded.usage,
-			}),
-		);
+		const copiedTier = branch.find(entry => entry.type === "service_tier_change");
+		expect(copiedTier).toMatchObject({ parentId: priorId, type: "service_tier_change" });
+		expect(copiedTier?.id).not.toBe(serviceTierId);
+		expect(reloaded.getEntry(serviceTierId)).toMatchObject({ parentId: discardedId });
+		expect(reloaded.getEntry(discardedId)).toMatchObject({ type: "message", message: discarded });
 		expect(branch.at(-1)).toMatchObject({
 			type: "branch_summary",
 			summary: "",
 			details: { kind: "discarded-entry-branch", discardedEntryId: discardedId },
-			parentId: serviceTierId,
+			parentId: copiedTier?.id,
 		});
 		expect(reloaded.getUsageStatistics()).toEqual(usageBefore);
 		await reloaded.close();

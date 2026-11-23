@@ -1,0 +1,293 @@
+[
+  {
+    "name": "Recorded 2026-11-06 18:56 rows",
+    "tasks": [
+      {
+        "content": "Use grid: row opens explainer panel, small inline toggle",
+        "status": "completed",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "artifactOwner": "main",
+        "schedule": {
+          "firstRequirementAt": 1793910550840,
+          "previewTracked": true,
+          "previewPending": false,
+          "previewIdentityMissing": false,
+          "previewPartial": false,
+          "dependencies": [],
+          "owner": "AuditUseGrid",
+          "reestimateCount": 0,
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/consolidated-2026-11-05"
+          ],
+          "estimateRevision": 4,
+          "estimate": {
+            "optimisticSeconds": 1800,
+            "likelySeconds": 2800,
+            "pessimisticSeconds": 3500,
+            "confidence": "low",
+            "basis": "full e2e union gate ~35-45 min under load 138",
+            "updatedAt": 1793914698554
+          },
+          "riskEstimateMeanSeconds": 2383.3333333333335,
+          "executor": {
+            "workerId": "AuditUseGrid",
+            "agentProfile": "qa-auditor",
+            "resolvedModel": "codex-lb/gpt-6.1-sol",
+            "thinkingLevel": "medium",
+            "startedAt": 1793922255402,
+            "finishedAt": 1793922260505,
+            "outcome": "completed"
+          },
+          "progress": {
+            "at": 1793919462608,
+            "evidence": "closes with union-r2 rerun"
+          },
+          "finishedAt": 1793922431394,
+          "visibleAt": 1793923757306,
+          "deliveryCritic": {
+            "key": "[\"AuditUseGrid\",1793922255402,1793922260505]",
+            "startedAt": 1793923759247,
+            "verdict": "clean",
+            "evidence": ""
+          },
+          "handoffPending": true,
+          "review": "user",
+          "firstDeliveredAt": 1793924151544,
+          "reviewPage": "http://nucat.local:8767/review/pr111-delivered-2026-11-06b/"
+        }
+      },
+      {
+        "content": "Power source rows: remove red selection frame and grey boxes",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "artifactOwner": "AuditPowerRows",
+        "schedule": {
+          "firstRequirementAt": 1793956175526,
+          "previewTracked": true,
+          "previewPending": false,
+          "previewIdentityMissing": false,
+          "previewPartial": false,
+          "visibleAt": 1793958012300,
+          "dependencies": [],
+          "owner": "HelpfulVole",
+          "reestimateCount": 0,
+          "estimateRevision": 5,
+          "estimate": {
+            "optimisticSeconds": 360,
+            "likelySeconds": 720,
+            "pessimisticSeconds": 1500,
+            "confidence": "medium",
+            "basis": "visual audit at 2 widths + base build; AuditIntegrate-5 took 7.6 min",
+            "updatedAt": 1793961535626
+          },
+          "riskEstimateMeanSeconds": 1850,
+          "executor": {
+            "workerId": "HelpfulVole",
+            "agentProfile": "qa-auditor",
+            "resolvedModel": "codex-lb/gpt-6.1-sol",
+            "thinkingLevel": "medium",
+            "startedAt": 1793975521457,
+            "finishedAt": 1793975526642,
+            "outcome": "completed"
+          },
+          "progress": {
+            "at": 1793973104139,
+            "evidence": "audit fail at f73f78a6147e: Confirmed requested HEAD f73f78a6147e1e16d26619b39ab698769e66e461 with `git rev-parse HEAD` (exit 0) in ROOT. Inspected FacilityWorkspace.css:118-135: source openers are transparent and borderless, focus outlines are explicitly suppressed, and selection uses a fill and left stripe. Inspected e2e/facility-decisions-list.spec.ts:1250-1345: regression assertions and screenshot capture cover 1440px and 430px, including keyboard focus. However, agent://RandomMule delivered a read-only stakeholder/source review, not passing executable checks or inspected rendered results; its receipt explicitly states that no executable gate ran and rendered focus/phone appearance was not observed. Thus the reported red keyboard-focus rectangle and absence of grey boxes remain unverified at this HEAD. No product files changed, tests ran, or screenshots were inspected in this audit. The next worker must run the focused Power source regression checks on this exact revision and supply passing results plus inspected desktop/phone screenshots covering selected, unselected, hovered and keyboard-focused rows, demonstrating no red rectangle or grey containment boxes; repair any reproduced defect before delivering new revision-bound proof. Earlier evidence at 54b0302 is stale."
+          },
+          "deliveryCritic": {
+            "key": "[\"HelpfulVole\",1793975521457,1793975526642]",
+            "startedAt": 1793975579759,
+            "verdict": "clean",
+            "evidence": ""
+          },
+          "handoffPending": true,
+          "attemptHistory": [
+            {
+              "attemptId": "RunningWildfowl:1793960399945",
+              "workerName": "RunningWildfowl",
+              "resolvedModel": "codex-lb/gpt-6.1-terra",
+              "effort": "low",
+              "startedAt": 1793960399945,
+              "finishedAt": 1793960400501,
+              "durationMs": 114371,
+              "terminalStatus": "aborted",
+              "deliverablePaths": [
+                "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/RunningWildfowl.md"
+              ],
+              "infraFailureError": "BLOCKED: awaiting lead answer: Which exact delivered commit or frozen artifact should I review? The supplied commit range is empty, the preview is only a checkout path, and the named PowerRowsHead worker is working in a separate worktree. Read all four stakeholder profiles and the stakeholder-shadow skill; no product files changed and no gate was run. Requested clarification twice; wait reported Main cannot reply before this result.",
+              "infraFailureLine": "attempt 1 failed: BLOCKED: awaiting lead answer: Which exact delivered commit or frozen artifact should I review? The supplied commit range is empty, the preview is only a checkout path, and the named PowerRowsHead worker is working in a separate worktree. Read all four stakeholder profiles and the stakeholder-shadow skill; no product files changed and no gate was run. Requested clarification twice; wait reported Main cannot reply before this result."
+            }
+          ],
+          "audit": {
+            "delivery": "[\"AlertMacaw\",1793973679607,null]",
+            "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+            "head": "f73f78a6147e1e16d26619b39ab698769e66e461",
+            "startedAt": 1793973936362,
+            "verdict": "inconclusive",
+            "agent": "qa-auditor",
+            "attempts": 1,
+            "findings": "auditor returned no verdict for this row",
+            "at": 1793975278562
+          },
+          "workerIds": [
+            "RegularCondor",
+            "ShinyHare",
+            "AlertMacaw",
+            "HelpfulVole",
+            "SovietTern"
+          ],
+          "review": "user",
+          "firstDeliveredAt": 1793975673308
+        }
+      },
+      {
+        "content": "Power source rows: title size and indent match sibling rows",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "artifactOwner": "main",
+        "schedule": {
+          "firstRequirementAt": 1793956443785,
+          "previewTracked": true,
+          "previewPending": false,
+          "previewIdentityMissing": false,
+          "previewPartial": false,
+          "visibleAt": 1793961415081,
+          "dependencies": [
+            "Power source rows: remove red selection frame and grey boxes"
+          ],
+          "reestimateCount": 0,
+          "estimateRevision": 3,
+          "estimate": {
+            "optimisticSeconds": 360,
+            "likelySeconds": 780,
+            "pessimisticSeconds": 1500,
+            "confidence": "medium",
+            "basis": "closes with AuditPowerRows audit (dispatched 14:39, qa-auditor median 8 min)",
+            "updatedAt": 1793962068388
+          },
+          "owner": "AuditPowerRows",
+          "progress": {
+            "at": 1793962068388,
+            "evidence": "landed in 54b0302ad (99e540388 CSS, fb6be4a43 test, 54b0302ad PRD); pushed 14:36; 70/70 specs green"
+          },
+          "riskEstimateMeanSeconds": 1600,
+          "executor": {
+            "workerId": "InteriorToad",
+            "agentProfile": "gate-runner",
+            "resolvedModel": "anthropic/claude-opus-5-5",
+            "thinkingLevel": "low",
+            "startedAt": 1793961423085,
+            "finishedAt": 1793962007624,
+            "outcome": "completed"
+          },
+          "deliveryCritic": {
+            "key": "[\"InteriorToad\",1793961423085,1793962007624]",
+            "startedAt": 1793962038861,
+            "verdict": "clean",
+            "evidence": ""
+          },
+          "handoffPending": true,
+          "review": "user",
+          "firstDeliveredAt": 1793962387083
+        }
+      },
+      {
+        "content": "Power source rows: no red keyboard-focus frame",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "artifactOwner": "main",
+        "schedule": {
+          "firstRequirementAt": 1793962966944,
+          "previewTracked": true,
+          "previewPending": false,
+          "previewIdentityMissing": false,
+          "previewPartial": false,
+          "dependencies": [],
+          "owner": "ContinentalSnail-2",
+          "reestimateCount": 0,
+          "estimateRevision": 2,
+          "estimate": {
+            "optimisticSeconds": 600,
+            "likelySeconds": 1200,
+            "pessimisticSeconds": 2400,
+            "confidence": "medium",
+            "basis": "apply on PR 112 branch, push, audit R242/R243",
+            "updatedAt": 1793965585680
+          },
+          "riskEstimateMeanSeconds": 1600,
+          "executor": {
+            "workerId": "ContinentalSnail-2",
+            "agentProfile": "task",
+            "resolvedModel": "codex-lb/gpt-6.1-terra",
+            "thinkingLevel": "low",
+            "startedAt": 1793975471269,
+            "finishedAt": 1793975475297,
+            "outcome": "completed"
+          },
+          "attemptHistory": [
+            {
+              "attemptId": "PowerFocusFrame:1793963233709",
+              "workerName": "PowerFocusFrame",
+              "resolvedModel": "codex-lb/gpt-6.1-sol",
+              "effort": "medium",
+              "startedAt": 1793963233709,
+              "finishedAt": 1793963359792,
+              "durationMs": 129707,
+              "terminalStatus": "aborted",
+              "deliverablePaths": [
+                "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/PowerFocusFrame.md"
+              ],
+              "infraFailureError": "BLOCKED: awaiting lead answer: Should I fetch real Bitbucket main explicitly or use 54b0302ad? Mandatory brief-mismatch protocol prevents proceeding without the lead's decision. origin points to /home/kom/proj/sunbim/datacenter-decision-graph; fetched origin/main is f492cee2206c237ba6732f537b9944388ce5e240 (PR106), not the required merged PR111 base. c64ec5fe6648 is absent. Asked twice, waited twice, and checked Main's published state without finding an answer. All unblocked preparation completed: npm ci exit 0; read skills, documentation map, README, relevant process, target spec, CSS focus selectors, PRD, and Playwright configuration (eligible project chromium). Changed paths: none; tracked worktree remains unmodified. No commit or patch; no server PIDs; no screenshots or viewports checked. Remaining visual gaps: all requested before/after focus captures and computed-style measurements, fail-before/pass-after proof, final gates and delivery. Retro: preserved existing implementation/contracts by not applying a fix to the wrong base; failure was a stale local origin/main prerequisite rather than a code/test failure.",
+              "infraFailureLine": "attempt 1 failed: BLOCKED: awaiting lead answer: Should I fetch real Bitbucket main explicitly or use 54b0302ad? Mandatory brief-mismatch protocol prevents proceeding without the lead's decision. origin points to /home/kom/proj/sunbim/datacenter-decision-graph; fetched origin/main is f492cee2206c237ba6732f537b9944388ce5e240 (PR106), not the required merged PR111 base. c64ec5fe6648 is absent. Asked twice, waited twice, and checked Main's published state without finding an answer. All unblocked preparation completed: npm ci exit 0; read skills, documentation map, README, relevant process, target spec, CSS focus selectors, PRD, and Playwright configuration (eligible project chromium). Changed paths: none; tracked worktree remains unmodified. No commit or patch; no server PIDs; no screenshots or viewports checked. Remaining visual gaps: all requested before/after focus captures and computed-style measurements, fail-before/pass-after proof, final gates and delivery. Retro: preserved existing implementation/contracts by not applying a fix to the wrong base; failure was a stale local origin/main prerequisite rather than a code/test failure."
+            },
+            {
+              "attemptId": "ContinentalSnail-2:1793974750899",
+              "workerName": "ContinentalSnail-2",
+              "resolvedModel": "codex-lb/gpt-6.1-terra",
+              "effort": "medium",
+              "startedAt": 1793974750899,
+              "finishedAt": 1793974755917,
+              "durationMs": 317602,
+              "terminalStatus": "aborted",
+              "deliverablePaths": [
+                "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/ContinentalSnail-2.md"
+              ],
+              "infraFailureError": "Blocked: the specified live review server refuses connections at both 192.168.100.74:5173 and 127.0.0.1:5173; no process listens on port 5173. ROOT HEAD is f73f78a6147e1e16d26619b39ab698769e66e461. The existing dist predates this proof and its revision is unverified, so it cannot substitute for the requested served build. No screenshots or theme/width verdicts were obtained. Main was notified to restore the review service.",
+              "infraFailureLine": "attempt 2 failed: Blocked: the specified live review server refuses connections at both 192.168.100.74:5173 and 127.0.0.1:5173; no process listens on port 5173. ROOT HEAD is f73f78a6147e1e16d26619b39ab698769e66e461. The existing dist predates this proof and its revision is unverified, so it cannot substitute for the requested served build. No screenshots or theme/width verdicts were obtained. Main was notified to restore the review service."
+            }
+          ],
+          "progress": {
+            "at": 1793972087107,
+            "evidence": "audit fail at f73f78a6147e: Missing completed acceptance evidence at HEAD. ContinentalSnail output was an unfinished review transcript, not a green gate receipt or inspected HEAD screenshots. Next worker must verify integrated focus CSS and run the keyboard-focus oracle at both widths on requested revision."
+          },
+          "visibleAt": 1793968879853,
+          "deliveryCritic": {
+            "key": "[\"ContinentalSnail-2\",1793975471269,1793975475297]",
+            "startedAt": 1793975519754,
+            "verdict": "clean",
+            "evidence": ""
+          },
+          "handoffPending": true,
+          "audit": {
+            "delivery": "[\"YearningAnglerfish\",1793975208706,null]",
+            "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+            "head": "f73f78a6147e1e16d26619b39ab698769e66e461",
+            "startedAt": 1793975284298,
+            "verdict": "pending",
+            "agent": "qa-auditor",
+            "attempts": 1
+          },
+          "workerIds": [
+            "ContinentalSnail",
+            "ContinentalSnail-2",
+            "CloudyLoon",
+            "YearningAnglerfish",
+            "MaximumLimpet"
+          ],
+          "review": "user",
+          "firstDeliveredAt": 1793975744943
+        }
+      }
+    ]
+  }
+]

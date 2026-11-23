@@ -1,6 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { $flag, $which, logger } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { TOML } from "bun";
 
 /**
@@ -101,7 +102,7 @@ async function parseConfig(): Promise<LspmuxConfig | null> {
  */
 async function checkServerRunning(binaryPath: string): Promise<boolean> {
 	try {
-		const proc = Bun.spawn([binaryPath, "status"], {
+		const proc = spawnBackground([binaryPath, "status"], {
 			stdout: "pipe",
 			stderr: "pipe",
 			windowsHide: true,

@@ -640,6 +640,9 @@ mod tests {
 			max_results:          Some(5),
 			sort_by_mtime:        true,
 			include_node_modules: Some(true),
+			max_scan_entries:     None,
+			max_scan_bytes:       None,
+			exclude:              Vec::new(),
 			walk:                 walk::Options {
 				hidden: true,
 				gitignore: false,

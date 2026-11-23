@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { streamBedrock } from "@oh-my-pi/pi-ai/providers/amazon-bedrock";
-import type { AssistantMessage, Context, Model, Tool } from "@oh-my-pi/pi-ai/types";
+import type { AssistantMessage, Context, Model, Tool, ProviderSessionState } from "@oh-my-pi/pi-ai/types";
 import { logger } from "@oh-my-pi/pi-utils";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import {
@@ -240,5 +240,40 @@ describe("Bedrock signed-thinking prefix mismatch recovery", () => {
 		);
 		expect(dropWarnings).toHaveLength(1);
 		expect(dropWarnings[0]?.[1]).toMatchObject({ count: 2, path: "messages.1.content.0" });
+	});
+	it("reports the changed historical block on a subsequent Bedrock dispatch", async () => {
+		const frames = bedrockHappyPathFrames();
+		frames[3] = bedrockEvent(
+			"messageStop",
+			JSON.stringify({
+				stopReason: "end_turn",
+				additionalModelResponseFields: {
+					input_transformations: [
+						{ type: "thinking_dropped", path: "messages.1.content.0", reason: "prefix_binding_mismatch" },
+					],
+				},
+			}),
+		);
+		const { fetch } = mockedFetch(index => eventStreamResponse(index === 0 ? bedrockHappyPathFrames() : frames));
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const warn = vi.spyOn(logger, "warn");
+		await withSkippedBedrockAuth(async () => {
+			const options = { fetch, providerSessionState, maxTokens: 64, reasoning: Effort.Medium };
+			expect((await streamBedrock(boundTarget, context, options).result()).stopReason).toBe("stop");
+			const changed: Context = { ...context, messages: [...context.messages] };
+			changed.messages[0] = { role: "user", content: "PRIVATE changed history", timestamp: 0 };
+			expect((await streamBedrock(boundTarget, changed, options).result()).stopReason).toBe("stop");
+		});
+		const warning = warn.mock.calls.find(
+			([message]) => message === "bedrock: dropped thinking block after conversation prefix changed",
+		);
+		expect(warning?.[1]).toMatchObject({
+			prefixDiagnostic: {
+				baseline: "previous-dispatch",
+				comparison: "changed",
+				difference: { messageIndex: 0, blockIndex: 0, field: "text" },
+			},
+		});
+		expect(JSON.stringify(warning)).not.toContain("PRIVATE");
 	});
 });

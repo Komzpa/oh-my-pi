@@ -41,6 +41,7 @@ describe("EventController todo reminder", () => {
 		const { ctx, present } = createContext();
 		const controller = new EventController(ctx);
 		const phases = [{ name: "Implementation", tasks: [{ content: "done task", status: "completed" as const }] }];
+		ctx.viewSession.getTodoPhases = () => phases;
 
 		await controller.handleEvent(reminder(1));
 		expect(present).toHaveBeenCalledTimes(1);
@@ -50,7 +51,10 @@ describe("EventController todo reminder", () => {
 			toolCallId: "todo-1",
 			toolName: "todo",
 			isError: false,
-			result: { content: [{ type: "text", text: "" }], details: { phases } },
+			result: {
+				content: [{ type: "text", text: "" }],
+				details: { phases: [{ name: "Old snapshot", tasks: [{ content: "undelivered", status: "in_progress" }] }] },
+			},
 		} as Extract<AgentSessionEvent, { type: "tool_execution_end" }>);
 
 		// The reminder stays in history (no retroactive removal); only the sticky

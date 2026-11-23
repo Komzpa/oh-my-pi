@@ -110,6 +110,42 @@ describe("task per-item blocking split", () => {
 		AgentRegistry.resetGlobalForTests();
 	});
 
+	it("records the actual worker before a frozen result update fails the launch call", async () => {
+		mockDiscovery();
+		const gate = Promise.withResolvers<void>();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			await gate.promise;
+			return makeResult(options.id!, options.agent.name);
+		});
+		const manager = createManager();
+		const session = createSession({ manager });
+		const launched = vi.fn();
+		session.onTaskWorkerLaunched = launched;
+		const tool = await TaskTool.create(session);
+		try {
+			await expect(
+				tool.execute(
+					"launch-error",
+					{
+						agent: "task",
+						name: "FrozenResultWorker",
+						task: "Return existing evidence.",
+					} as TaskParams,
+					undefined,
+					update => {
+						if (!firstText(update).startsWith("Spawned agent")) return;
+						const frozen = Object.freeze({ value: 0 }) as { value: number };
+						frozen.value = 1;
+					},
+				),
+			).rejects.toThrow();
+			expect(launched).toHaveBeenCalledWith("launch-error", 0, "FrozenResultWorker", "task");
+			expect(manager.getRunningJobs().some(job => job.agentId === "FrozenResultWorker")).toBe(true);
+		} finally {
+			gate.resolve();
+		}
+	});
+
 	it("runs blocking items inline while non-blocking siblings spawn as jobs", async () => {
 		mockDiscovery();
 		const gates = new Map<string, PromiseWithResolvers<void>>();
@@ -220,6 +256,29 @@ describe("task per-item blocking split", () => {
 		// results included — never an empty-results skeleton, and exactly once.
 		const completionUpdates = updates.filter(u => u.text.includes("Background task WorkerTwo complete."));
 		expect(completionUpdates).toHaveLength(1);
+	});
+
+	it("internal delivery call gets the final verdict from an ordinary profile without changing sibling dispatch", async () => {
+		mockDiscovery();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options =>
+			makeResult(options.id ?? "?", options.agent.name, { output: '{"verdict":"clean","findings":[]}' }),
+		);
+		const manager = createManager();
+		const tool = await TaskTool.create(createSession({ manager }));
+		const result = await tool.executeBlocking("tc-delivery", {
+			context: "ctx",
+			tasks: [{ name: "RackCritic", agent: "task", task: "Review delivered rack controls." }],
+		} as TaskParams);
+		expect(result.details?.results[0]?.output).toBe('{"verdict":"clean","findings":[]}');
+		expect(result.details?.async).toBeUndefined();
+		expect(manager.getAllJobs()).toHaveLength(0);
+
+		const ordinary = await tool.execute("tc-ordinary", {
+			context: "ctx",
+			tasks: [{ name: "NextWorker", agent: "task", task: "Continue independent work." }],
+		} as TaskParams);
+		expect(ordinary.details?.async?.jobId).toBe("NextWorker");
+		await manager.getJob("NextWorker")!.promise;
 	});
 
 	it("keeps an all-blocking batch fully synchronous", async () => {

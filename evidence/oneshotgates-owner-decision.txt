@@ -1,0 +1,3 @@
+DECISION: Yes—keep the fix on PR92 and implement it narrowly at existing gate hooks.
+
+PR92 owns the one-shot gating topic; the requirements ledger may be implemented elsewhere, but this change should adjust how its gates apply, not duplicate its implementation. Fetch and inspect the requirement owner’s current sites before patching. Do not touch another lane’s branch or push anywhere except the explicitly permitted PR92 branch. The missing build objects mean the historical comparison is unverified; use the read-only installed receipts and current source evidence.

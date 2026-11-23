@@ -1,0 +1,3 @@
+DECISION: Implement an incremental, cached markdown materialization for `history://current/full`, shared by common read and URL filesystem paging.
+
+This fixes the recovered trigger without building or stringifying the entire multi-GB history in memory; selector-only changes leave grep’s path broken. Reuse the append-only branch prefix and yield periodically. Keep the change on local `lane/stringifyfreeze`; do not push.

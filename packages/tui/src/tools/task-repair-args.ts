@@ -93,13 +93,14 @@ function repairSteps(steps: string[] | undefined): string[] | undefined {
 	return changed ? repaired : steps;
 }
 
-/** Repair a single (possibly partial) task item's prose fields (`task`, `steps`). */
+/** Repair a single (possibly partial) task item's prose fields (`task`, `steps`, `rework`). */
 function repairTaskItem(item: TaskItem): TaskItem {
 	if (item === null || typeof item !== "object") return item;
 	const task = typeof item.task === "string" ? repairDoubleEncodedJsonString(item.task) : item.task;
+	const rework = typeof item.rework === "string" ? repairDoubleEncodedJsonString(item.rework) : item.rework;
 	const steps = repairSteps(item.steps);
-	if (task === item.task && steps === item.steps) return item;
-	return { ...item, task, steps };
+	if (task === item.task && steps === item.steps && rework === item.rework) return item;
+	return { ...item, task, steps, rework };
 }
 
 /** Promote a JSON-string `tasks` payload to an array when it is unambiguously one. */
@@ -116,8 +117,8 @@ function parseStringTasks(tasks: string): TaskItem[] | undefined {
 }
 
 /**
- * Repair double-encoded prose in task-tool params (flat `task`/`steps`, shared
- * `context`, and each batch task item's `task`/`steps`), and promote a JSON-string
+ * Repair double-encoded prose in task-tool params (flat `task`/`steps` and `rework`, shared
+ * `context`, and each batch task item's `task`/`steps` and `rework`), and promote a JSON-string
  * `tasks` payload back to a real array. Returns the same reference when nothing
  * changed so callers can cheaply skip work. Defensive against partially-streamed
  * args (missing/undefined fields, partial task arrays) so it is safe on the render
@@ -127,6 +128,7 @@ export function repairTaskParams(params: TaskParams): TaskParams {
 	if (params === null || typeof params !== "object") return params;
 
 	const task = typeof params.task === "string" ? repairDoubleEncodedJsonString(params.task) : params.task;
+	const rework = typeof params.rework === "string" ? repairDoubleEncodedJsonString(params.rework) : params.rework;
 	const context = typeof params.context === "string" ? repairDoubleEncodedJsonString(params.context) : params.context;
 	const steps = repairSteps(params.steps);
 
@@ -143,8 +145,14 @@ export function repairTaskParams(params: TaskParams): TaskParams {
 	}
 	const finalTasks = tasks as TaskParams["tasks"];
 
-	if (task === params.task && steps === params.steps && context === params.context && finalTasks === params.tasks) {
+	if (
+		task === params.task &&
+		steps === params.steps &&
+		rework === params.rework &&
+		context === params.context &&
+		finalTasks === params.tasks
+	) {
 		return params;
 	}
-	return { ...params, task, steps, context, tasks: finalTasks };
+	return { ...params, task, steps, rework, context, tasks: finalTasks };
 }

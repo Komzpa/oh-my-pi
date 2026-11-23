@@ -119,7 +119,7 @@ func TestSmoke(t *testing.T) {
 	defer cancel()
 	client, log, finish := startServer(t, root, t.TempDir(), nil)
 
-	state, err := client.GetState(ctx)
+	state, err := client.GetState(ctx, GetStateCommand{})
 	if err != nil {
 		t.Fatalf("get_state: %v", err)
 	}
@@ -158,12 +158,12 @@ func TestSmoke(t *testing.T) {
 
 	phases, err := client.SetTodos(ctx, SetTodosCommand{Phases: []TodoPhase{{
 		Name:  "Smoke",
-		Tasks: []TodoItem{{Content: "Wait for review", Status: TodoStatusInProgress}},
+		Tasks: []TodoItem{{Content: "Wait for review", Status: TodoStatusBlocked, Blocker: Ptr("needs approval")}},
 	}}})
-	if err != nil || len(phases) != 1 || phases[0].Tasks[0].Status != TodoStatusInProgress {
+	if err != nil || len(phases) != 1 || phases[0].Tasks[0].Status != TodoStatusBlocked {
 		t.Fatalf("set_todos: %#v %v", phases, err)
 	}
-	t.Logf("set_todos: %s/%s status=%s", phases[0].Name, phases[0].Tasks[0].Content, phases[0].Tasks[0].Status)
+	t.Logf("set_todos: %s/%s status=%s blocker=%q", phases[0].Name, phases[0].Tasks[0].Content, phases[0].Tasks[0].Status, deref(phases[0].Tasks[0].Blocker))
 
 	events, err := client.SetEventFilter(ctx, SetEventFilterCommand{Events: nil})
 	if err != nil || events != nil {
@@ -361,7 +361,7 @@ func TestSmokeModel(t *testing.T) {
 	}
 	t.Logf("large prompt: %d bytes, user message_end carried the full text, assistant=%q, frames reassembled from rpc_chunk=%d", len(big), *turn.AssistantText, client.reassembled.Load())
 
-	state, err := client.GetState(ctx)
+	state, err := client.GetState(ctx, GetStateCommand{})
 	if err != nil {
 		t.Fatal(err)
 	}

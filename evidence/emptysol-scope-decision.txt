@@ -1,0 +1,3 @@
+DECISION: Yes—this is adequate scoped delivery; no additional fix is required.
+
+The current-head bypass is reproduced and fixed with the requested regression and verification evidence. Historical samples do not prove that bypass caused every empty stop, so report historical model waiting and deployed lifecycle as uncertain. No live mutation is needed for this delivery.

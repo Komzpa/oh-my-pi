@@ -6,6 +6,7 @@ import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/m
 import type { PluginRuntimeState } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/types";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import * as backgroundPriority from "@oh-my-pi/pi-utils/background-priority";
 
 // Regression for #11090: `omp-plugins.lock.json` can diverge from the package
 // version in node_modules. `plugin doctor` must surface the stale copy instead
@@ -16,6 +17,9 @@ describe("PluginManager.doctor version drift", () => {
 	let pluginsNodeModules: string;
 
 	beforeEach(async () => {
+		// Observe the package-manager payload before production priority wrapping.
+		vi.spyOn(backgroundPriority, "spawnBackground").mockImplementation(((cmd: string[], options?: object) =>
+			Bun.spawn(cmd, options)) as typeof Bun.spawn);
 		tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-plugin-drift-"));
 		pluginsDir = path.join(tmpRoot, "plugins");
 		pluginsNodeModules = path.join(pluginsDir, "node_modules");

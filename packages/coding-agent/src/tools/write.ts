@@ -43,6 +43,7 @@ import { getLspBatchRequest } from "../lsp/batch";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 
 import writeDescription from "../prompts/tools/write.md" with { type: "text" };
+import writeAgentOnlyDescription from "../prompts/tools/write-agent-only.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 
 import { routeWriteThroughBridge, shouldRouteWriteThroughBridge } from "./acp-bridge";
@@ -176,6 +177,7 @@ async function assertNotReadSelectorMisfire(target: string, content: string, cwd
 const writeSchema = type({
 	path: "string",
 	content: "string",
+	"replace?": type("boolean").describe("Confirm this write intentionally replaces existing file content."),
 });
 
 /**
@@ -567,7 +569,15 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		return key === undefined ? undefined : [key];
 	};
 	readonly label = "Write";
+	/**
+	 * agent://-only mode: `write` was granted only as the agent:// message
+	 * transport (see createTools); a runtime full-write grant clears it.
+	 */
+	get #agentOnly(): boolean {
+		return this.session.agentOnlyWrite === true;
+	}
 	get description(): string {
+		if (this.#agentOnly) return prompt.render(writeAgentOnlyDescription);
 		// The archive/SQLite target grammar lives in `help://read/sources`; inline it when that doc is unreachable.
 		return prompt.render(writeDescription, {
 			readActive: docTopicsReadable(this.session),
@@ -906,6 +916,21 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			policy?.scope === "coordination" ||
 			policy?.scope === "reply" ||
 			(target !== undefined && policy?.cancels?.(target.url) === true);
+		// An agent-only session grants `write` purely as the agent:// message transport
+		// (see createTools): peer messages, file-free writes and replies proceed; every
+		// other target is rejected before any handler, guard, conflict resolver, or
+		// bridge sees it.
+		if (this.#agentOnly && !touchesNoFiles) {
+			// A read-only agent that still has `yield` can return the content through it;
+			// name that channel so the rejection does not read as a dead end (#14308).
+			const yieldHint =
+				this.session.isToolActive?.("yield") === true
+					? " Return the file content or path through `yield` instead."
+					: " Report the change as text in your messages instead.";
+			throw new ToolError(
+				`This session is read-only: \`write\` accepts only agent:// messages, so it cannot write '${path}'.${yieldHint}`,
+			);
+		}
 		return untilAborted(signal, async () => {
 			// Text payloads get hashline display prefixes ([PATH#HASH] + LINE:) stripped if the model
 			// copied them from read output. Verbatim payloads (messages, process stdin, setting

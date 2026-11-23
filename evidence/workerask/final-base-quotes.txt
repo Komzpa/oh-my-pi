@@ -1,0 +1,23 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/requirement_quotes.test.ts:
+76 | 		verdict: "pass",
+77 | 		findings: "tests pass",
+78 | 		checks: [{ command: "bun test levels", exitCode: 0 }],
+79 | 		screenshots: [],
+80 | 	};
+81 | 	expect(settleRowAuditVerdict(verdict, () => false, quotes).verdict).toBe("inconclusive");
+                                                                          ^
+error: expect(received).toBe(expected)
+
+Expected: "inconclusive"
+Received: "pass"
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-workerask-20261107/oh-my-pi/packages/reemxy-extensions/extensions/requirement_quotes.test.ts:81:70)
+(fail) a passing requirement audit with executable checks cannot hide widening or omit quote comparison [0.28ms]
+
+ 0 pass
+ 2 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [240.00ms]

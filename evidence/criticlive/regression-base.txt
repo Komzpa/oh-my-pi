@@ -1,0 +1,76 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/plan_critic.loading.test.ts:
+42 | 				return { content: [], details: { results: [{ output: JSON.stringify({ converging: true, criticalPathBlocker: null, falseDependencies: [], split: [], cut: [], escalate: [], actions: [] }) }] } };
+43 | 			};
+44 | 			await initializeExtensions(session, { reportSendError: () => {}, reportRuntimeError: error => { throw error; } });
+45 | 			if (mode === "restore") expect(await restoreSession(session)).toEqual({ turn: false, subagents: [] });
+46 | 			for (let i = 0; i < 100 && !calls; i++) await Bun.sleep(10);
+47 | 			expect(calls).toBe(1);
+                      ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticlive-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.loading.test.ts:47:18)
+(fail) installed lead extension paths reach one reviewer after resume [1438.75ms]
+42 | 				return { content: [], details: { results: [{ output: JSON.stringify({ converging: true, criticalPathBlocker: null, falseDependencies: [], split: [], cut: [], escalate: [], actions: [] }) }] } };
+43 | 			};
+44 | 			await initializeExtensions(session, { reportSendError: () => {}, reportRuntimeError: error => { throw error; } });
+45 | 			if (mode === "restore") expect(await restoreSession(session)).toEqual({ turn: false, subagents: [] });
+46 | 			for (let i = 0; i < 100 && !calls; i++) await Bun.sleep(10);
+47 | 			expect(calls).toBe(1);
+                      ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 0
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticlive-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.loading.test.ts:47:18)
+(fail) installed lead extension paths reach one reviewer after restore [1183.26ms]
+(pass) installed lead extension paths reach one reviewer after package [135.81ms]
+
+packages/reemxy-extensions/extensions/plan_critic.test.ts:
+(pass) critic receives the current requirement diff with its exact quote, excluding another revision's receipt [2.11ms]
+(pass) plan critic runtime binding > successful dependency mutation closes an action; prose and failed tools cannot [0.94ms]
+(pass) plan critic runtime binding > unaddressed verdict escalates on next wake and survives session restart [0.63ms]
+(pass) plan critic runtime binding > converging verdict permits waiting and repeats only after the configured interval [0.39ms]
+(pass) plan critic runtime binding > completed or worker sessions never spawn critics [58.68ms]
+(pass) plan critic runtime binding > fresh reviewer input excludes transcripts and coalesces concurrent wakes [0.72ms]
+(pass) plan critic runtime binding > new churn triggers a review immediately inside the periodic interval [0.34ms]
+(pass) plan critic runtime binding > malformed verdicts cannot erase obligations [0.08ms]
+(pass) plan critic runtime binding > unrelated mutations never count as executing a critic action [0.03ms]
+257 | 	await settle();
+258 | 	expect(h.run).not.toHaveBeenCalled();
+259 | 	const plan = makePlan();
+260 | 	plan[0]!.tasks[0]!.schedule = { cumulativeReestimateCount: 5 };
+261 | 	h.set(plan);
+262 | 	expect(h.pollMs()).toBeLessThanOrEqual(60_000);
+                          ^
+error: expect(received).toBeLessThanOrEqual(expected)
+
+Expected: <= 60000
+Received: 2700000
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticlive-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.test.ts:262:21)
+(fail) an empty startup followed by restored churn is reviewed by the next minute poll [0.18ms]
+268 | test("a continued lead with parentSession runs; a depth-zero task child does not", async () => {
+269 | 	const h = harness();
+270 | 	vi.spyOn(h.ctx.sessionManager, "getHeader").mockReturnValue({ type: "session", id: "continued", cwd: "/fixture", timestamp: new Date().toISOString(), parentSession: "old-lead", continuationOf: "old-lead" });
+271 | 	await h.event("session_start");
+272 | 	await settle();
+273 | 	expect(h.run).toHaveBeenCalledTimes(1);
+                     ^
+error: expect(received).toHaveBeenCalledTimes(expected)
+
+Expected number of calls: 1
+Received number of calls: 0
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticlive-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.test.ts:273:16)
+(fail) a continued lead with parentSession runs; a depth-zero task child does not [0.15ms]
+
+ 10 pass
+ 4 fail
+ 41 expect() calls
+Ran 14 tests across 2 files. [3.31s]

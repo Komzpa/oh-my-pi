@@ -88,6 +88,8 @@ const OPTION_TIERS = {
 	waitForTerminalDrain: "server",
 	onPayload: "server",
 	onResponse: "server",
+	onProviderCallFailed: "server",
+	onProviderCallSucceeded: "server",
 	onSseEvent: "server",
 	execHandlers: "server",
 	cursorExecHandlers: "server",

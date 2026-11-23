@@ -188,7 +188,10 @@ describe("AgentSession context-file reload on session reset", () => {
 	});
 });
 
-describe("workspace tree in the system prompt", () => {
+// Fork: the workspace tree is delivered once as the `startup-context` conversation message
+// (system-prompt.ts `conversationContext`, kept out of the cached system prompt), so these
+// upstream assertions on `session.systemPrompt` do not apply; covered by system-prompt-journal-selection.
+describe.skip("workspace tree in the system prompt", () => {
 	it("keeps the tree within a transcript and rescans it after a context reset", async () => {
 		await withTreeSession(async (session, tempDir) => {
 			await Bun.write(tempDir.join("project", "checked_out_entry.txt"), "x");

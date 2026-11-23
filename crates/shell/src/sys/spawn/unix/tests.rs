@@ -677,7 +677,7 @@ fn dropped_detached_external_runs_on_and_is_no_leftover() {
 	let s = spawner(Sessions::Detach, Duration::from_millis(100));
 	let a = argv(&["/bin/sleep", "30"]);
 	let mut detached = spec(&a, &env, NEW);
-	detached.lineage = crate::bash::Lineage { label: 7, detached: true };
+	detached.lineage = crate::bash::Lineage { label: 7, detached: true, ..Default::default() };
 	let p = s.spawn(detached).unwrap();
 	let pid = p.pid() as i32;
 	assert!(s.leftovers().unwrap().is_empty(), "a detached external is no leak");
@@ -702,7 +702,7 @@ fn output_written_after_the_extproc_is_dropped_still_arrives() {
 	let a = sh("/bin/sleep 0.3; echo late");
 	let mut sp = spec(&a, &env, NEW);
 	sp.stdio = [StdioSpec::Null, out.boxed(), StdioSpec::Null];
-	sp.lineage = crate::bash::Lineage { label: 0, detached: true };
+	sp.lineage = crate::bash::Lineage { label: 0, detached: true, ..Default::default() };
 	drop(s.spawn(sp).unwrap());
 	let waker = Waker::from(Arc::new(Unpark(thread::current())));
 	let cx = Context::from_waker(&waker);

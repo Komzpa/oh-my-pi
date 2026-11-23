@@ -1,0 +1,3 @@
+DECISION: YES—proceed with the existing 77-PR assembly recipe against read-only fork/main, run the requested typecheck, and report the fresh-upstream PR16651 conflict separately.
+
+The recorded assembly decision and user’s explicit fork/main prohibition support assembling locally from that read-only base. Keep the work scoped to the requested composite; make no other PR edits.

@@ -20,6 +20,23 @@ describe("AgentOutputManager", () => {
 		expect(await mgr.allocate("Bob")).toBe("Bob");
 	});
 
+	it("restarts a taken collision chain from its base instead of growing the chain", async () => {
+		const mgr = new AgentOutputManager(() => null);
+		await mgr.reserve(["Worker", "Worker-2", "Worker-3", "Worker-3-2"]);
+
+		// Re-spawning the already-suffixed `Worker-3-2` must not yield `Worker-3-2-2`.
+		expect(await mgr.allocate("Worker-3-2")).toBe("Worker-4");
+	});
+
+	it("keeps a numeric suffix that is part of the name", async () => {
+		const mgr = new AgentOutputManager(() => null);
+
+		expect(await mgr.allocate("gpt-5")).toBe("gpt-5");
+		// `gpt` was never handed out, so `-5` is the name, not a collision suffix.
+		expect(await mgr.allocate("gpt-5")).toBe("gpt-5-2");
+		expect(await mgr.allocate("Worker-2")).toBe("Worker-2");
+	});
+
 	it("reserves numeric names for PIDs only when cross-instance messaging is enabled", async () => {
 		using tmp = TempDir.createSync("@omp-output-manager-");
 		await Bun.write(path.join(tmp.path(), "Agent123.md"), "prior output");
@@ -30,6 +47,23 @@ describe("AgentOutputManager", () => {
 
 		expect(await local.allocate("123")).toBe("123");
 		expect(await sharing.allocate("123")).toBe("Agent123-2");
+	});
+
+	it("restarts a taken collision chain from its base instead of growing the chain", async () => {
+		const mgr = new AgentOutputManager(() => null);
+		await mgr.reserve(["Worker", "Worker-2", "Worker-3", "Worker-3-2"]);
+
+		// Re-spawning the already-suffixed `Worker-3-2` must not yield `Worker-3-2-2`.
+		expect(await mgr.allocate("Worker-3-2")).toBe("Worker-4");
+	});
+
+	it("keeps a numeric suffix that is part of the name", async () => {
+		const mgr = new AgentOutputManager(() => null);
+
+		expect(await mgr.allocate("gpt-5")).toBe("gpt-5");
+		// `gpt` was never handed out, so `-5` is the name, not a collision suffix.
+		expect(await mgr.allocate("gpt-5")).toBe("gpt-5-2");
+		expect(await mgr.allocate("Worker-2")).toBe("Worker-2");
 	});
 
 	it("nests ids under a parent prefix and still suffixes repeats", async () => {
@@ -104,4 +138,12 @@ describe("AgentOutputManager", () => {
 		// Unrelated names sharing the prefix are unaffected.
 		expect(await mgr.allocate("@omp:other")).toBe("@omp:other");
 	});
+});
+
+// Resends request the recorded owner, including owners from older suffix-chain versions.
+it("flattens repeated owner names and keeps the ordinal monotonic after resume", async () => {
+	const mgr = new AgentOutputManager(() => null, { parentPrefix: "Lead" });
+	await mgr.reserve(["Lead.PhonePacking-7-3-2-2", "Lead.PhonePacking-62"]);
+	expect(await mgr.allocate("PhonePacking", 63)).toBe("Lead.PhonePacking-63");
+	expect(await mgr.allocate("PhonePacking", 63)).toBe("Lead.PhonePacking-64");
 });

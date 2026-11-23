@@ -37,6 +37,19 @@ test("an abort accepted while an earlier frame is blocked invalidates a prompt a
 	await steerDone;
 });
 
+test("custom prompts share abort admission ordering without replay", () => {
+	const gate = new RpcUserInputGate();
+	const message = { customType: "launcher", content: "typed 🐈", display: true };
+	const before = { type: "prompt_custom", message } as const;
+	gate.accept(before);
+	expect(gate.isCurrent(before)).toBe(true);
+	gate.accept({ type: "abort" });
+	expect(gate.isCurrent(before)).toBe(false);
+	const after = { type: "prompt_custom", message } as const;
+	gate.accept(after);
+	expect(gate.isCurrent(after)).toBe(true);
+});
+
 test("a prompt accepted after abort stays current", () => {
 	const gate = new RpcUserInputGate();
 	gate.accept({ type: "abort" });

@@ -11,6 +11,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { TodoTracker } from "@oh-my-pi/pi-coding-agent/session/todo-tracker";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TodoTool, type ToolSession, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
@@ -349,10 +350,17 @@ describe("AgentSession eager prelude re-injection after compaction", () => {
 			"todo.eager": "preferred",
 		});
 		stubCompaction();
+		const nudgeSpy = vi.spyOn(TodoTracker.prototype, "buildPostCompactionEagerNudges");
 
 		const continuation = await runToContinuation(session, waitForCall);
 
-		expect(continuation.messageTexts.some(text => text.includes("Consider calling"))).toBe(true);
+		const nudges = nudgeSpy.mock.results.at(-1)?.value;
+		if (!Array.isArray(nudges)) throw new Error("Missing eager todo nudges");
+		const reminder = nudges.find(
+			(message: AgentMessage) => message.role === "custom" && message.customType === "eager-todo-prelude",
+		);
+		if (!reminder) throw new Error("Missing eager todo continuation prelude");
+		expect(continuation.messageTexts.some(text => text.includes(getMessageText(reminder)))).toBe(true);
 		expect(continuation.toolChoice).toBeUndefined();
 	});
 

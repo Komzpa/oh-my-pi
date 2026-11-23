@@ -24,6 +24,7 @@ import type {
 import { normalizeSystemPrompts } from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { toolWireSchema } from "../utils/schema/wire";
+import { isLegacySubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import chatmlHistoryNote from "./gitlab-duo-workflow-chatml-note.md" with { type: "text" };
 import { redactSensitiveCredentials } from "./transform-messages";
 
@@ -742,8 +743,10 @@ function hasGitLabDuoWorkflowSteerAfterBatch(
 	}
 	if (lastBatchResultIndex < 0) return false;
 	for (let index = lastBatchResultIndex + 1; index < messages.length; index++) {
-		const role = messages[index]?.role;
-		if (role === "user" || role === "developer") return true;
+		const message = messages[index];
+		// Per-request timing is advisory, not a new workflow instruction.
+		if (isLegacySubagentElapsedNote(message)) continue;
+		if (message.role === "user" || message.role === "developer") return true;
 	}
 	return false;
 }

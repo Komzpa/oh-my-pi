@@ -1,0 +1,77 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/editgrant.test.ts:
+(pass) assignment paths become durable scope; shared context cannot grant writes; explicit scope still conflicts [63.94ms]
+(pass) nested children with no own row inherit live ancestor scope and cannot widen it through assignment, cwd, symlink or revocation [5.99ms]
+175 | 			content: "Other writer",
+176 | 			status: "in_progress",
+177 | 			schedule: { owner: "Other", resources: [f.assigned] },
+178 | 		});
+179 | 		expect((await request([`${f.assigned}/capture.png`])).details.status).toBe("conflict");
+180 | 		expect(f.steer.mock.calls[0]![2]).toEqual({ attribution: "agent" });
+                                          ^
+error: expect(received).toEqual(expected)
+
+- {
+-   "attribution": "agent",
+- }
++ undefined
+
+- Expected  - 3
++ Received  + 1
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-scopegrant-20261108/oh-my-pi/packages/reemxy-extensions/extensions/editgrant.test.ts:180:37)
+(fail) resource scope requests restating assignments grant without lead work; new paths deliver one ready schedule action [10.16ms]
+197 | 		const f = await fixture();
+198 | 		try {
+199 | 			const event = { agent: "task", spawnKey: "BragPrScreenshots", row: "Capture screenshots",
+200 | 				resources: [`${f.assigned}/src/file.ts`],
+201 | 				assignment: `Capture screenshots\n${declaration} "${f.assigned}"` };
+202 | 			expect(routeSubagentSpawn(event, f.lead, undefined, { stateFile: `${f.dir}/spawns` })).toBeUndefined();
+                                                                                                ^
+error: expect(received).toBeUndefined()
+
+Received: {
+  block: true,
+  reason: "resources exceed row \"Capture screenshots\"; update its todo schedule resources before expanding.",
+}
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-scopegrant-20261108/oh-my-pi/packages/reemxy-extensions/extensions/editgrant.test.ts:202:91)
+(fail) assigned Worktree overrides stale row resources even with explicit file resources [1.01ms]
+197 | 		const f = await fixture();
+198 | 		try {
+199 | 			const event = { agent: "task", spawnKey: "BragPrScreenshots", row: "Capture screenshots",
+200 | 				resources: [`${f.assigned}/src/file.ts`],
+201 | 				assignment: `Capture screenshots\n${declaration} "${f.assigned}"` };
+202 | 			expect(routeSubagentSpawn(event, f.lead, undefined, { stateFile: `${f.dir}/spawns` })).toBeUndefined();
+                                                                                                ^
+error: expect(received).toBeUndefined()
+
+Received: {
+  block: true,
+  reason: "resources exceed row \"Capture screenshots\"; update its todo schedule resources before expanding.",
+}
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-scopegrant-20261108/oh-my-pi/packages/reemxy-extensions/extensions/editgrant.test.ts:202:91)
+(fail) assigned cwd: overrides stale row resources even with explicit file resources [0.49ms]
+197 | 		const f = await fixture();
+198 | 		try {
+199 | 			const event = { agent: "task", spawnKey: "BragPrScreenshots", row: "Capture screenshots",
+200 | 				resources: [`${f.assigned}/src/file.ts`],
+201 | 				assignment: `Capture screenshots\n${declaration} "${f.assigned}"` };
+202 | 			expect(routeSubagentSpawn(event, f.lead, undefined, { stateFile: `${f.dir}/spawns` })).toBeUndefined();
+                                                                                                ^
+error: expect(received).toBeUndefined()
+
+Received: {
+  block: true,
+  reason: "resources exceed row \"Capture screenshots\"; update its todo schedule resources before expanding.",
+}
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-scopegrant-20261108/oh-my-pi/packages/reemxy-extensions/extensions/editgrant.test.ts:202:91)
+(fail) assigned "scope":{"root": overrides stale row resources even with explicit file resources [0.43ms]
+
+ 2 pass
+ 4 fail
+ 23 expect() calls
+Ran 6 tests across 1 file. [1128.00ms]

@@ -138,10 +138,25 @@ fn prepare(call: &ToolCall, config: &ToolConfig, waker: Waker) -> flume::Receive
 			next: Next::Git { args: call.argv[1..].to_vec(), to_stderr: false },
 		});
 	}
-	let args: Vec<String> = call.argv[1..]
+	let args = call.argv[1..]
 		.iter()
-		.map(|a| a.to_str_lossy().into_owned())
-		.collect();
+		.map(|arg| arg.to_str().map(str::to_owned))
+		.collect::<Result<Vec<_>, _>>();
+	let args = match args {
+		Ok(args) => args,
+		Err(_) if layers.guard => {
+			return finished(Prepared {
+				out:  vec![(2, b"git guard argument is not valid UTF-8\n".to_vec())],
+				next: Next::Exit(1),
+			});
+		},
+		Err(_) => {
+			return finished(Prepared {
+				out:  Vec::new(),
+				next: Next::Git { args: call.argv[1..].to_vec(), to_stderr: false },
+			});
+		},
+	};
 	let cwd = call.cwd.to_path_lossy().into_owned();
 	let env = call.env.clone();
 	let config = config.clone();

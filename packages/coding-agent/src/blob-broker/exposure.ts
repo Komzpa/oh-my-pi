@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $which, logger } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import {
 	credentialString,
 	type DestinationProcessContext,
@@ -253,7 +254,13 @@ async function spawnUrlTunnel(
 	const fd = fs.openSync(logPath, "w");
 	let proc: Bun.Subprocess;
 	try {
-		proc = Bun.spawn(argv, { env: { ...spawn.env }, stdin: "ignore", stdout: fd, stderr: fd, cwd: spawn.cwd });
+		proc = spawnBackground(argv, {
+			env: { ...spawn.env },
+			stdin: "ignore",
+			stdout: fd,
+			stderr: fd,
+			cwd: spawn.cwd,
+		});
 	} finally {
 		fs.closeSync(fd);
 	}
@@ -517,7 +524,7 @@ export async function startExposure(config: ExposureConfig, port: number): Promi
 			if (!config.sshTarget) throw new Error('imageUrls exposure "ssh" requires imageUrls.sshTarget');
 			const binary = requireBinary(spawn, "ssh");
 			const remotePort = config.sshRemotePort ?? 8787;
-			const proc = Bun.spawn(
+			const proc = spawnBackground(
 				[
 					binary,
 					"-o",

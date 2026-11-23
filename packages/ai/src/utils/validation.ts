@@ -825,7 +825,7 @@ function normalizeOptionalNullsForSchema(
 		if (!(key in nextValue)) continue;
 		const currentValue = nextValue[key];
 		const isNullish =
-			currentValue === null ||
+			(currentValue === null && !branchMatchesSchema(propertySchema, currentValue, root)) ||
 			(currentValue === "null" &&
 				!(Object.hasOwn(CONTENT_CARRYING_KEYS, key) && branchMatchesSchema(propertySchema, currentValue, root)));
 		const isInvalidEmptyString =
@@ -2065,7 +2065,7 @@ export function validateToolArguments(
 	const ctx = getValidationContext(tool);
 	const { json } = ctx;
 
-	// Always normalize first — strip null/string "null" from optional fields,
+	// Always normalize first — strip invalid null/string "null" from optional fields,
 	// strip optional empty strings only when their property schema rejects the
 	// explicit value, and substitute defaults. Handles LLM outputting
 	// placeholders for "no value" even when validation would otherwise pass.

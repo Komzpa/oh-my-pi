@@ -17,6 +17,7 @@ import type { Context, Message, UserMessage } from "@oh-my-pi/pi-ai";
 import { isPerCallContextMessage, markPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import dateCwdReminderTemplate from "../prompts/system/date-cwd-reminder.md" with { type: "text" };
+import type { SessionContextEntryMetadata } from "./session-context";
 import type { SessionEntry } from "./session-entries";
 
 /** Renders the reminder text for the given local calendar date and cwd. */
@@ -85,7 +86,7 @@ function firstTurnDigest(message: UserMessage): string {
 
 /** A journal kept as custom entries on the session's branch: fork, branch switch and resume read the right set. */
 export function createSessionDateCwdReminderJournal(sessionManager: {
-	getBranchView(): readonly SessionEntry[];
+	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[];
 	appendCustomEntry(customType: string, data?: unknown): string;
 	getSessionId(): string;
 	getLeafId(): string | null;
@@ -114,7 +115,11 @@ export function createSessionDateCwdReminderJournal(sessionManager: {
 	return {
 		load: () => {
 			// The model's history starts after the latest `/clear`; earlier placements belong to a history it no longer sees.
-			const branch = sessionManager.getBranchView();
+			const branch = sessionManager.getBranchMatching(
+				metadata =>
+					metadata.type === "reset_boundary" ||
+					(metadata.type === "custom" && metadata.customType === DATE_CWD_REMINDER_CUSTOM_TYPE),
+			);
 			const start = branch.findLastIndex(entry => entry.type === "reset_boundary") + 1;
 			return branch.slice(start).flatMap(entry => placementOfEntry(entry) ?? []);
 		},
@@ -137,12 +142,24 @@ function messageStartsWithReminder(message: UserMessage, reminder: string): bool
 	return message.content[0]?.type === "text" && message.content[0].text === reminder;
 }
 
+let reminderPrefixes: WeakMap<Message, string> | undefined;
+
+/** Debug-only boundary recorded where the reminder is inserted, without parsing prompt text. */
+export function dateCwdReminderPrefix(message: Message): string | undefined {
+	return reminderPrefixes?.get(message);
+}
+
 function injectReminder(message: UserMessage, reminder: string): UserMessage {
 	const content: UserMessage["content"] =
 		typeof message.content === "string"
 			? `${reminder}\n\n${message.content}`
 			: [{ type: "text", text: reminder }, ...message.content];
-	return { ...message, content };
+	const injected = { ...message, content };
+	if (Bun.env.OMP_PROMPT_LAYERS === "1") {
+		reminderPrefixes ??= new WeakMap();
+		reminderPrefixes.set(injected, reminder);
+	}
+	return injected;
 }
 
 /** Developer turns the injector inserted; every other output message maps to an input one. */

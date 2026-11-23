@@ -259,19 +259,39 @@ describe("inline click-to-focus geometry", () => {
 			expect(screenRow).toBeGreaterThanOrEqual(0);
 			term.sendInput(`\x1b[<0;5;${screenRow + 1}M`);
 		};
+		const pinnedRows = (): string[] => {
+			const rows = plainRows(term.getViewport());
+			const header = rows.findIndex(row => row.includes("Subagents · 5 running"));
+			expect(header).toBeGreaterThanOrEqual(0);
+			const end = rows.findIndex((row, index) => index > header && row.trim().length === 0);
+			return rows.slice(header + 1, end < 0 ? undefined : end);
+		};
 
 		// Collapsed by default: three rows plus the expander.
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
+		expect(
+			pinnedRows()
+				.filter(row => row.includes("ToggleAgent"))
+				.map(row => row.match(/ToggleAgent\d/)?.[0]),
+		).toEqual(["ToggleAgent0", "ToggleAgent1", "ToggleAgent2"]);
+		expect(pinnedRows().some(row => row.includes("more — expand"))).toBe(true);
 
 		// Clicking the expander paints the slotted window with a collapse row.
 		await clickRow("more — expand");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("show less")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent4"))).toBe(true);
+		expect(
+			pinnedRows()
+				.filter(row => row.includes("ToggleAgent"))
+				.map(row => row.match(/ToggleAgent\d/)?.[0]),
+		).toEqual(["ToggleAgent0", "ToggleAgent1", "ToggleAgent2", "ToggleAgent3", "ToggleAgent4"]);
 		// Clicking it again collapses back to a few rows.
 		await clickRow("show less");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
+		expect(
+			pinnedRows()
+				.filter(row => row.includes("ToggleAgent"))
+				.map(row => row.match(/ToggleAgent\d/)?.[0]),
+		).toEqual(["ToggleAgent0", "ToggleAgent1", "ToggleAgent2"]);
 	});
 
 	/**
@@ -364,16 +384,26 @@ describe("inline click-to-focus geometry", () => {
 		cfgExtensionAssistantTextRenderers.set(mode.settings, true);
 		const { extension } = installDemoLinkExtension([]);
 		appendReply("Open [the details](demo:open/7) now.");
-		await mode.init({ suppressWelcomeIntro: true });
-		void mode.getUserInput();
-		await term.waitForRender();
+		const reachedReplay = Promise.withResolvers<void>();
+		const releaseReplay = Promise.withResolvers<void>();
+		const renderInitialMessages = mode.renderInitialMessages.bind(mode);
+		vi.spyOn(mode, "renderInitialMessages").mockImplementationOnce(async options => {
+			reachedReplay.resolve();
+			await releaseReplay.promise;
+			await renderInitialMessages(options);
+		});
+		const initializing = mode.init({ suppressWelcomeIntro: true });
+		await reachedReplay.promise;
 		// A startup notice (MCP, LSP) lands in the chat before the replay; then a scheme is claimed.
 		mode.showWarning("early notice");
 		extension.linkSchemes.push("demo");
 		mode.syncExtensionLinks();
 		// Any rebuild the change queued runs as a microtask, before this continuation.
 		await Promise.resolve();
-		await mode.renderInitialMessages({ preserveExistingChat: true });
+		releaseReplay.resolve();
+		await initializing;
+		void mode.getUserInput();
+		await term.waitForRender();
 		const chat = plainRows(mode.chatContainer.render(120)).join("\n");
 		expect(chat.split("Open the details now.").length - 1).toBe(1);
 		expect(chat.split("early notice").length - 1).toBe(1);

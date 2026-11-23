@@ -112,7 +112,7 @@ afterEach(() => {
 describe("AskTool form dialog", () => {
 	it("returns the submitted form data as JSON and each field's question and answer", async () => {
 		const formDialog = vi.fn<FormDialog>(async () => ({ data: { store: "redis", ttl: 7 } }));
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-1",
 			{ html: DB_FORM },
 			undefined,
@@ -133,7 +133,7 @@ describe("AskTool form dialog", () => {
 		const notes = [
 			{ name: "store", question: "Session store", option: "Redis", value: "redis", text: "  shared\ncache " },
 		];
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-notes",
 			{ html: DB_FORM },
 			undefined,
@@ -160,14 +160,14 @@ describe("AskTool form dialog", () => {
 			return { data: { store: "sqlite" } };
 		};
 		const settings = Settings.isolated({ "ask.timeout": 30, "ask.notify": "off" });
-		await new AskTool(createSession()).execute(
+		await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"a",
 			{ html: DB_FORM },
 			undefined,
 			undefined,
 			createContext({ formDialog }),
 		);
-		await new AskTool(createSession({ settings })).execute(
+		await new AskTool(createSession({ settings }), { interactiveAnswer: true }).execute(
 			"b",
 			{ html: DB_FORM },
 			undefined,
@@ -176,6 +176,7 @@ describe("AskTool form dialog", () => {
 		);
 		await new AskTool(
 			createSession({ settings, getPlanModeState: () => ({ enabled: true, planFilePath: "/tmp/plan.md" }) }),
+			{ interactiveAnswer: true },
 		).execute("c", { html: DB_FORM }, undefined, undefined, createContext({ formDialog }));
 
 		expect(timeouts).toEqual([undefined, 30_000, undefined]);
@@ -185,7 +186,7 @@ describe("AskTool form dialog", () => {
 		const notes = [
 			{ name: "store", question: "Session store", option: "SQLite", value: "sqlite", text: "no service needed" },
 		];
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-timeout",
 			{ html: DB_FORM },
 			undefined,
@@ -201,7 +202,7 @@ describe("AskTool form dialog", () => {
 	});
 
 	it("gives no answer when a timeout leaves a required field empty", async () => {
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-timeout-required",
 			{ html: '<form><input name="transport" required></form>' },
 			undefined,
@@ -214,7 +215,7 @@ describe("AskTool form dialog", () => {
 
 	it("aborts the turn when the user cancels the form", async () => {
 		const abort = vi.fn();
-		const outcome = new AskTool(createSession()).execute(
+		const outcome = new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-cancel",
 			{ html: DB_FORM },
 			undefined,
@@ -228,7 +229,7 @@ describe("AskTool form dialog", () => {
 
 	it("surfaces a failed form dialog as a tool error without aborting the turn", async () => {
 		const abort = vi.fn();
-		const outcome = new AskTool(createSession()).execute(
+		const outcome = new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-failed",
 			{ html: DB_FORM },
 			undefined,
@@ -252,7 +253,7 @@ describe("AskTool form dialog", () => {
 
 	it("tells the model a form without named controls needs one, without showing it", async () => {
 		const formDialog = vi.fn<FormDialog>();
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-unnamed",
 			{ html: "<form><p>Pick one</p><label><input type='radio' value='a'> A</label></form>" },
 			undefined,
@@ -306,7 +307,8 @@ describe("AskTool form dialog", () => {
 		};
 		for (const [shape, html] of Object.entries(forms)) {
 			const formDialog = vi.fn<FormDialog>(async () => ({ data: { sources: "personal" } }));
-			const result = await new AskTool(createSession()).execute(
+			// Fork: only an interactive-answer ask blocks on the form dialog; others return a pending question.
+			const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 				`call-${shape}`,
 				{ html },
 				undefined,
@@ -327,7 +329,7 @@ describe("AskTool form dialog", () => {
 				steering.abort(source);
 				return options?.signal?.aborted ? undefined : { data: { store: "sqlite" } };
 			};
-			const outcome = new AskTool(createSession()).execute(
+			const outcome = new AskTool(createSession(), { interactiveAnswer: true }).execute(
 				`call-${source}`,
 				{ html: DB_FORM },
 				undefined,
@@ -342,7 +344,7 @@ describe("AskTool form dialog", () => {
 		expect(user.abort).not.toHaveBeenCalled();
 
 		const irc = ask("irc");
-		expect((await irc.outcome).details?.answers[0]).toMatchObject({ name: "store", answer: "SQLite" });
+		expect((await irc.outcome).details?.answers?.[0]).toMatchObject({ name: "store", answer: "SQLite" });
 	});
 
 	it("tells the model what the user answered before a message closed the form", async () => {
@@ -355,7 +357,7 @@ describe("AskTool form dialog", () => {
 			steering.abort("user");
 			return undefined;
 		};
-		const outcome = new AskTool(createSession()).execute(
+		const outcome = new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-given",
 			{ html: DB_FORM },
 			undefined,
@@ -420,7 +422,11 @@ describe("AskTool form dialog", () => {
 			const events = [];
 			for await (const event of agentLoop(
 				[{ role: "user", content: "Choose a store", timestamp: Date.now() }],
-				{ systemPrompt: ["Test"], messages: [], tools: [new AskTool(createSession())] },
+				{
+					systemPrompt: ["Test"],
+					messages: [],
+					tools: [new AskTool(createSession(), { interactiveAnswer: true })],
+				},
 				config,
 				controller.signal,
 				mock.stream,
@@ -444,6 +450,7 @@ describe("AskTool form dialog", () => {
 		const sendNotification = spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
 		await new AskTool(
 			createSession({ hasUI: false, canPromptUser: true, settings: Settings.isolated({ "ask.notify": "on" }) }),
+			{ interactiveAnswer: true },
 		).execute(
 			"call-acp",
 			{ html: DB_FORM },
@@ -469,7 +476,7 @@ describe("AskTool without a form surface", () => {
 		};
 		const input = vi.fn<Input>(async () => "7");
 		const editor = vi.fn<Editor>(async () => "Keep it simple");
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-fallback",
 			{
 				html: `<form>
@@ -512,7 +519,7 @@ describe("AskTool without a form surface", () => {
 	it("titles each prompt with the form text around its field", async () => {
 		const select = vi.fn<Select>(async () => "Share it");
 		const input = vi.fn<Input>(async () => "4");
-		await new AskTool(createSession()).execute(
+		await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-context",
 			{
 				html: `<form>
@@ -557,7 +564,7 @@ describe("AskTool without a form surface", () => {
 			titles.push(title);
 			return label(options[0]);
 		};
-		await new AskTool(createSession()).execute(
+		await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-intervening",
 			{
 				html: `<form>
@@ -585,7 +592,7 @@ describe("AskTool without a form surface", () => {
 		// A blank Other answer returns to the options.
 		const typed = ["  ", " MySQL 8 ", "terraform"];
 		const input = vi.fn<Input>(async () => typed.shift());
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-other",
 			{
 				html: `<form>
@@ -625,7 +632,7 @@ describe("AskTool without a form surface", () => {
 			titles.push(title);
 			return answers.shift();
 		};
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-validate",
 			{ html: `<form><label>Port <input type="number" name="port" required></label></form>` },
 			undefined,
@@ -643,7 +650,7 @@ describe("AskTool without a form surface", () => {
 	it("omits a lone checkbox the user leaves unchecked", async () => {
 		const select: Select = async (_title, options) =>
 			options.map(label).find(option => option?.endsWith("Done selecting"));
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-flag",
 			{ html: `<form><label><input type="checkbox" name="force" value="yes"> Force push</label></form>` },
 			undefined,
@@ -656,7 +663,7 @@ describe("AskTool without a form surface", () => {
 
 	it("aborts the turn when the user cancels a later field", async () => {
 		const abort = vi.fn();
-		const outcome = new AskTool(createSession()).execute(
+		const outcome = new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-cancel-later",
 			{ html: DB_FORM },
 			undefined,
@@ -672,10 +679,16 @@ describe("AskTool without a form surface", () => {
 describe("AskTool without an interactive UI", () => {
 	it("aborts the turn in an ordinary session", async () => {
 		const abort = vi.fn();
-		const outcome = new AskTool(createSession()).execute("call-headless", { html: DB_FORM }, undefined, undefined, {
-			hasUI: false,
-			abort,
-		} as unknown as AgentToolContext);
+		const outcome = new AskTool(createSession(), { interactiveAnswer: true }).execute(
+			"call-headless",
+			{ html: DB_FORM },
+			undefined,
+			undefined,
+			{
+				hasUI: false,
+				abort,
+			} as unknown as AgentToolContext,
+		);
 
 		await expect(outcome).rejects.toThrow(new ToolAbortError("Ask tool requires interactive mode"));
 		expect(abort).toHaveBeenCalledTimes(1);
@@ -683,13 +696,12 @@ describe("AskTool without an interactive UI", () => {
 
 	it("tells a headless fork's model to answer in its final message instead of aborting", async () => {
 		const abort = vi.fn();
-		const outcome = new AskTool(createSession({ hasUI: false, advertiseHeadlessAsk: true })).execute(
-			"call-fork",
-			{ html: DB_FORM },
-			undefined,
-			undefined,
-			{ hasUI: false, abort } as unknown as AgentToolContext,
-		);
+		const outcome = new AskTool(createSession({ hasUI: false, advertiseHeadlessAsk: true }), {
+			interactiveAnswer: true,
+		}).execute("call-fork", { html: DB_FORM }, undefined, undefined, {
+			hasUI: false,
+			abort,
+		} as unknown as AgentToolContext);
 
 		await expect(outcome).rejects.toBeInstanceOf(ToolError);
 		expect(abort).not.toHaveBeenCalled();
@@ -740,7 +752,7 @@ describe("AskTool option note images", () => {
 			data: { store: "redis" },
 			notes: [{ ...notes[0]!, images: [tagged] }, notes[1]!],
 		}));
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-note-images",
 			{ html: DB_FORM },
 			undefined,
@@ -820,6 +832,7 @@ describe("AskTool option note images", () => {
 						resolver: () => async () => "test-key",
 					} as unknown as ToolSession["modelRegistry"],
 				}),
+				{ interactiveAnswer: true },
 			).execute(
 				"call-describe",
 				{ html: DB_FORM },

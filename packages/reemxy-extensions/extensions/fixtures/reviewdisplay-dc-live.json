@@ -1,0 +1,168 @@
+[
+  {
+    "name": "DC snapshot 2026-11-05T14:15:08.455Z",
+    "tasks": [
+      {
+        "content": "Facility 2D: too much empty space around site",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "artifactOwner": "main",
+        "schedule": {
+          "firstRequirementAt": 1793860950648,
+          "previewTracked": true,
+          "previewPending": false,
+          "previewIdentityMissing": false,
+          "previewPartial": false,
+          "visibleAt": 1793864277169,
+          "dependencies": [],
+          "reestimateCount": 0,
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/facility-empty-space"
+          ],
+          "estimateRevision": 6,
+          "estimate": {
+            "optimisticSeconds": 1800,
+            "likelySeconds": 3000,
+            "pessimisticSeconds": 3600,
+            "confidence": "low",
+            "basis": "redo with a fresh owner",
+            "updatedAt": 1793866963642
+          },
+          "executor": {
+            "workerId": "BuildingSquare-2",
+            "agentProfile": "task",
+            "resolvedModel": "codex-lb/gpt-6.1-terra",
+            "thinkingLevel": "medium",
+            "startedAt": 1793865990452,
+            "finishedAt": 1793866766639,
+            "outcome": "failed"
+          },
+          "progress": {
+            "at": 1793887905880,
+            "evidence": "speculation target row was dropped; Facility 2D proceeds on its own base"
+          },
+          "review": "user",
+          "speculativeOn": "Land crash and Guide fixes on PR #109, push",
+          "attemptHistory": [
+            {
+              "attemptId": "SquareFootprintUI:1793865647292",
+              "workerName": "SquareFootprintUI",
+              "resolvedModel": "codex-lb/gpt-6.1-terra",
+              "effort": "medium",
+              "startedAt": 1793865647292,
+              "finishedAt": 1793865688506,
+              "durationMs": 48160,
+              "terminalStatus": "aborted",
+              "deliverablePaths": [
+                "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/SquareFootprintUI.md"
+              ],
+              "infraFailureError": "The operation was aborted.",
+              "infraFailureLine": "attempt 1 failed: The operation was aborted."
+            },
+            {
+              "attemptId": "BuildingSquare-2:1793865990452",
+              "workerName": "BuildingSquare-2",
+              "resolvedModel": "codex-lb/gpt-6.1-terra",
+              "effort": "medium",
+              "startedAt": 1793865990452,
+              "finishedAt": 1793866766639,
+              "durationMs": 797301,
+              "terminalStatus": "failed",
+              "deliverablePaths": [
+                "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/BuildingSquare-2.md"
+              ],
+              "infraFailureError": "Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: Uncommitted tracked changes: commit or discard, then yield Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding.",
+              "infraFailureLine": "attempt 2 failed: Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: Uncommitted tracked changes: commit or discard, then yield Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding."
+            }
+          ]
+        }
+      },
+      {
+        "content": "Adaptive Facility: WebGL blit errors and tenant panes",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "artifactOwner": "main",
+        "schedule": {
+          "firstRequirementAt": 1793866675834,
+          "previewTracked": true,
+          "previewPending": true,
+          "previewIdentityMissing": false,
+          "previewPartial": true,
+          "dependencies": [],
+          "owner": "TenantCageMesh",
+          "reestimateCount": 1,
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/facility-blit-warmup",
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/tenant-cage-mesh"
+          ],
+          "estimateRevision": 3,
+          "estimate": {
+            "optimisticSeconds": 900,
+            "likelySeconds": 1800,
+            "pessimisticSeconds": 3000,
+            "confidence": "low",
+            "basis": "Committed-head :2128 gate after the browser queue (RackTilesGate, then FollowupLanding), then add to the new PR",
+            "updatedAt": 1793867736911
+          },
+          "executor": {
+            "workerId": "TenantCageMesh",
+            "agentProfile": "task",
+            "resolvedModel": "codex-lb/gpt-6.1-sol",
+            "thinkingLevel": "medium",
+            "startedAt": 1793865990654,
+            "finishedAt": 1793867717797,
+            "outcome": "completed"
+          },
+          "progress": {
+            "at": 1793878294784,
+            "evidence": "Not part of today's Lyosha follow-ups; tenant mesh worktree preserved at tmp/tenant-cage-mesh; restaff after push2"
+          },
+          "postDeadline": true
+        }
+      },
+      {
+        "content": "Dev server stops reloading every few seconds",
+        "status": "completed",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "artifactOwner": "main",
+        "schedule": {
+          "firstRequirementAt": 1793866675834,
+          "previewTracked": true,
+          "previewPending": true,
+          "previewIdentityMissing": true,
+          "previewPartial": false,
+          "dependencies": [],
+          "owner": "AuditDevServer3",
+          "reestimateCount": 1,
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/vite.config.ts"
+          ],
+          "estimateRevision": 7,
+          "estimate": {
+            "optimisticSeconds": 300,
+            "likelySeconds": 600,
+            "pessimisticSeconds": 1200,
+            "confidence": "low",
+            "basis": "Waits on an intake fix, not product work",
+            "updatedAt": 1793870827521
+          },
+          "progress": {
+            "at": 1793870827521,
+            "evidence": "R200 passed twice (AuditDevServer, AuditDevServer2). Intake has no accepted collateral form for a config-only artifact; reported via report_issue. Not re-auditing a third time."
+          },
+          "executor": {
+            "workerId": "AuditDevServer3",
+            "agentProfile": "qa-auditor",
+            "resolvedModel": "codex-lb/gpt-6-astra",
+            "thinkingLevel": "medium",
+            "startedAt": 1793877468682,
+            "finishedAt": 1793877469074,
+            "outcome": "completed"
+          },
+          "riskEstimateMeanSeconds": 650,
+          "finishedAt": 1793877496487
+        }
+      }
+    ]
+  }
+]

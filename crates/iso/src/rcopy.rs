@@ -17,7 +17,7 @@ use std::{
 	fs::FileType,
 	io::{self, Write as _},
 	path::Path,
-	process::{Child, ChildStdin, Command, Output, Stdio},
+	process::{Child, ChildStdin, Output, Stdio},
 	sync::{
 		Arc, Mutex, PoisonError,
 		mpsc::{self, Receiver},
@@ -231,7 +231,7 @@ fn run_program(
 		}
 		label
 	};
-	let mut child = Command::new(program)
+	let mut child = crate::process::background_command(program)
 		.arg("-C")
 		.arg(cwd)
 		.args(args)
@@ -460,6 +460,8 @@ fn set_mtime(path: &Path, mtime: std::time::SystemTime) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+	#[cfg(unix)]
+	use std::process::Command;
 	use std::{
 		fs,
 		path::{Path, PathBuf},
@@ -631,5 +633,57 @@ mod tests {
 		assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
 		assert!(output.status.success());
 		assert_eq!(output.stdout, b"out");
+	}
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod background_priority_tests {
+	#[test]
+	fn git_capture_background_priority_preserves_parent() {
+		// The native priority path needs no `ionice` binary; only this test's
+		// probe does, so hosts without util-linux skip it instead of failing.
+		let has_ionice = std::env::var_os("PATH")
+			.is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("ionice").is_file()));
+		if !has_ionice {
+			eprintln!("skipping: ionice not on PATH");
+			return;
+		}
+		let parent_pid = std::process::id();
+		let parent_before = std::fs::read_to_string(format!("/proc/{parent_pid}/stat")).unwrap();
+		let output = super::git_capture(&std::env::temp_dir(), &[
+			"-c",
+			"alias.priority=!cat /proc/$$/stat; ionice -p $$",
+			"priority",
+		])
+		.unwrap();
+		let output = String::from_utf8(output).unwrap();
+		let mut lines = output.lines();
+		let child_stat = lines.next().unwrap();
+		let child_nice = child_stat
+			.rsplit_once(')')
+			.unwrap()
+			.1
+			.split_whitespace()
+			.nth(16)
+			.unwrap();
+		assert_eq!(child_nice, "19", "child stat: {child_stat}");
+		let child_io = lines.next().unwrap();
+		assert_eq!(child_io, "best-effort: prio 7");
+		let parent_after = std::fs::read_to_string(format!("/proc/{parent_pid}/stat")).unwrap();
+		let nice = |stat: &str| {
+			stat
+				.rsplit_once(')')
+				.unwrap()
+				.1
+				.split_whitespace()
+				.nth(16)
+				.unwrap()
+				.to_owned()
+		};
+		assert_eq!(nice(&parent_after), nice(&parent_before));
+		println!(
+			"child nice={child_nice}; child io={child_io}; parent nice={} unchanged",
+			nice(&parent_after)
+		);
 	}
 }

@@ -27,7 +27,7 @@ class RenameEpermOnceStorage extends FileSessionStorage {
 	override renameSync(source: string, target: string): void {
 		if (
 			this.failNextSessionReplace &&
-			source.includes(".tmp") &&
+			path.basename(source).endsWith(".tmp") &&
 			target.endsWith(".jsonl") &&
 			this.existsSync(target)
 		) {
@@ -64,7 +64,7 @@ describe("SessionManager rewrite EPERM replacement fallback", () => {
 		// hits EPERM and exercises the atomic-write fallback.
 		await expect(session.setSessionName("renamed session", "user")).resolves.toBe(true);
 		storage.failNextSessionReplace = true;
-		await expect(session.rewriteEntries()).resolves.toBeUndefined();
+		await expect(session.rewriteEntries({ forceFullRewrite: true })).resolves.toBeUndefined();
 
 		const rewritten = await storage.readText(sessionFile);
 		expect(rewritten).toContain('"title":"renamed session"');
@@ -97,7 +97,7 @@ describe("SessionManager rewrite EPERM rollback failure", () => {
 				if (!this.failureMode) return super.renameSync(source, target);
 				// Every temp -> target rename fails with EPERM (both the upstream attempt in
 				// writeTextAtomic and the retry inside #replaceSessionFileAfterEpermSync).
-				if (source.includes(".tmp") && target.endsWith(".jsonl")) {
+				if (path.basename(source).endsWith(".tmp") && target.endsWith(".jsonl")) {
 					this.tempRenameAttempts++;
 					const tag = this.tempRenameAttempts === 1 ? "original" : "retry";
 					throw new FsCodeError("EPERM", `EPERM ${tag}: rename '${source}' -> '${target}'`);
@@ -119,7 +119,7 @@ describe("SessionManager rewrite EPERM rollback failure", () => {
 
 		let thrown: Error | undefined;
 		try {
-			await session.rewriteEntries();
+			await session.rewriteEntries({ forceFullRewrite: true });
 		} catch (err) {
 			thrown = err as Error;
 		}
@@ -165,7 +165,7 @@ describe("FileSessionStorage.writeTextAtomic commitGuard cleanup", () => {
 		let guardCalls = 0;
 		class EpermThenGuardStorage extends FileSessionStorage {
 			override renameSync(source: string, targetPath: string): void {
-				if (source.includes(".tmp") && targetPath.endsWith(".jsonl") && !epermAttempted) {
+				if (path.basename(source).endsWith(".tmp") && targetPath.endsWith(".jsonl") && !epermAttempted) {
 					epermAttempted = true;
 					throw new FsCodeError("EPERM", `EPERM: operation not permitted, rename '${source}' -> '${targetPath}'`);
 				}
@@ -199,7 +199,7 @@ describe("FileSessionStorage.writeTextAtomic commitGuard cleanup", () => {
 		let guardCalls = 0;
 		class EpermMissingTargetStorage extends FileSessionStorage {
 			override renameSync(source: string, targetPath: string): void {
-				if (source.includes(".tmp") && targetPath.endsWith(".jsonl") && !epermAttempted) {
+				if (path.basename(source).endsWith(".tmp") && targetPath.endsWith(".jsonl") && !epermAttempted) {
 					epermAttempted = true;
 					throw new FsCodeError("EPERM", `EPERM: operation not permitted, rename '${source}' -> '${targetPath}'`);
 				}

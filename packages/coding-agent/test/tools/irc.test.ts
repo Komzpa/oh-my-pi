@@ -4,16 +4,19 @@ import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { IrcBus, type IrcBusApi } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { executeSend } from "@oh-my-pi/pi-coding-agent/irc/messaging";
-import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
+import { type IrcDeliveryReceipt, type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, type AgentRegistryApi } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { IrcBridge, type IrcBridgeHost } from "@oh-my-pi/pi-coding-agent/session/irc-bridge";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { attachIrcWakeTurnMonitor } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { createSessionDefaults } from "../helpers/session-defaults";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 type IrcWakeObserver = (records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined;
 
@@ -64,11 +67,13 @@ function makeFakeSession(): FakeSession {
 	};
 }
 
-function createRealSession(overrides: Record<string, unknown> = {}): {
+function createRealSession(
+	overrides: Record<string, unknown> = {},
+	sessionManager = SessionManager.inMemory("/tmp"),
+): {
 	session: AgentSession;
 	sessionManager: SessionManager;
 } {
-	const sessionManager = SessionManager.inMemory("/tmp");
 	const session = new AgentSession({
 		agent: new Agent({
 			initialState: {
@@ -105,6 +110,109 @@ describe("IRC", () => {
 	});
 
 	describe("IrcBus", () => {
+		it.each(["startup", "revival"])("bounds recipient preparation without late delivery: %s", async phase => {
+			const late = makeFakeSession();
+			const gate = Promise.withResolvers<AgentSession>();
+			const ref = registry.register({
+				id: "Slow",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				...(phase === "startup" ? { starting: true } : { status: "parked" as const }),
+			});
+			const lifecycle = AgentLifecycleManager.global();
+			if (phase === "revival") lifecycle.adopt("Slow", { idleTtlMs: 0, revive: () => gate.promise });
+			const unsubscribe = vi.fn();
+			if (phase === "startup") {
+				const subscribe = registry.onChange.bind(registry);
+				vi.spyOn(registry, "onChange").mockImplementation(listener => {
+					const stop = subscribe(listener);
+					return () => {
+						unsubscribe();
+						stop();
+					};
+				});
+			}
+			const bounded = new IrcBus(registry, lifecycle, 5);
+			let receipt: IrcDeliveryReceipt | undefined;
+			const pending = bounded.send({ from: "Main", to: "Slow", body: "do not deliver late" }).then(value => {
+				receipt = value;
+			});
+			await Bun.sleep(25);
+			const beforeReady = receipt;
+			if (phase === "startup") expect(unsubscribe).toHaveBeenCalledTimes(1);
+			// Always release the fixture, including on the old code's RED path.
+			if (phase === "startup") registry.attachSession("Slow", late.session, undefined, ref);
+			else gate.resolve(late.session);
+			await pending;
+			await Bun.sleep(0);
+			expect(beforeReady?.outcome).toBe("failed");
+			expect(beforeReady?.error).toContain("not delivered");
+			expect(late.delivered).toEqual([]);
+			expect(bounded.unreadCount("Slow")).toBe(0);
+			expect(bounded.sentSince("Main", "Slow", 0)).toBe(false);
+			expect(bounded.unansweredSends("Main", 0)).toEqual([]);
+		});
+
+		it("delivers exactly once when startup becomes ready before the preparation deadline", async () => {
+			const recipient = makeFakeSession();
+			const ref = registry.register({
+				id: "Ready",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				starting: true,
+			});
+			const bounded = new IrcBus(registry, undefined, 100);
+			const pending = bounded.send({ from: "Main", to: "Ready", body: "one instruction" });
+			registry.attachSession("Ready", recipient.session, undefined, ref);
+			expect((await pending).outcome).toBe("injected");
+			expect(recipient.delivered.map(message => message.body)).toEqual(["one instruction"]);
+			expect(bounded.sentSince("Main", "Ready", 0)).toBe(true);
+		});
+
+		it("does not enter revival after startup consumes the shared preparation budget", async () => {
+			const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+			const recipient = makeFakeSession();
+			const ref = registry.register({
+				id: "Budget",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				starting: true,
+			});
+			const lifecycle = AgentLifecycleManager.global();
+			lifecycle.adopt("Budget", { idleTtlMs: 0, revive: async () => recipient.session });
+			const ensureLive = vi.spyOn(lifecycle, "ensureLive");
+			const bounded = new IrcBus(registry, lifecycle, 50);
+			const pending = bounded.send({ from: "Main", to: "Budget", body: "expired" });
+			clock.mockReturnValue(51);
+			registry.attachSession("Budget", recipient.session, undefined, ref);
+			expect((await pending).outcome).toBe("failed");
+			expect(ensureLive).not.toHaveBeenCalled();
+			expect(recipient.delivered).toEqual([]);
+			expect(bounded.sentSince("Main", "Budget", 0)).toBe(false);
+		});
+
+		it("fails a startup steer when that generation is killed or replaced", async () => {
+			for (const replacement of [false, true]) {
+				const ref = registry.register({
+					id: "Starting",
+					displayName: "task",
+					kind: "sub",
+					session: null,
+					starting: true,
+				});
+				const delivery = bus.send({ from: "Main", to: "Starting", body: "old correction" });
+				const next = makeFakeSession();
+				if (replacement)
+					registry.register({ id: "Starting", displayName: "task", kind: "sub", session: next.session });
+				else registry.setStatus("Starting", "aborted", ref);
+				expect((await delivery).outcome).toBe("failed");
+				expect(next.delivered).toEqual([]);
+			}
+		});
+
 		it("send delivers to a live recipient and reports the session outcome", async () => {
 			const sub = makeFakeSession();
 			registry.register({ id: "0-Sub", displayName: "task", kind: "sub", session: sub.session });
@@ -196,6 +304,67 @@ describe("IRC", () => {
 			expect(receipt.outcome).toBe("revived");
 			expect(sub.delivered.map(msg => msg.body)).toEqual(["wake up"]);
 			expect(registry.get("0-Parked")?.status).toBe("idle");
+		});
+
+		it("send rehydrates and revives a terminal ref evicted from the resident roster", async () => {
+			using tempDir = TempDir.createSync("@omp-irc-evicted-resume-");
+			const rootFile = `${tempDir.path()}/main.jsonl`;
+			const rootDir = rootFile.slice(0, -".jsonl".length);
+			const childCount = 140;
+			const childId = (index: number) => `Worker-${String(index).padStart(3, "0")}`;
+			const sessionRecord = (id: string) =>
+				`${JSON.stringify({
+					type: "session",
+					version: CURRENT_SESSION_VERSION,
+					id,
+					timestamp: "2026-09-01T00:00:00.000Z",
+					cwd: tempDir.path(),
+				})}\n`;
+			const initRecord = `${JSON.stringify({
+				type: "session_init",
+				id: "init",
+				parentId: null,
+				timestamp: "2026-09-01T00:00:01.000Z",
+				systemPrompt: "test",
+				task: "persisted task",
+				tools: ["read"],
+			})}\n`;
+			await Bun.write(rootFile, sessionRecord("main"));
+			await Promise.all(
+				Array.from({ length: childCount }, (_, index) => {
+					const id = childId(index);
+					return Bun.write(`${rootDir}/${id}.jsonl`, sessionRecord(id) + initRecord);
+				}),
+			);
+			registry.register({
+				id: "0-Main",
+				displayName: "main",
+				kind: "main",
+				session: makeFakeSession().session,
+				sessionFile: rootFile,
+				status: "idle",
+			});
+			await ensurePersistedRoster(registry, rootFile);
+			const evictedId = Array.from({ length: childCount }, (_, index) => childId(index)).find(
+				id => registry.get(id) === undefined,
+			);
+			expect(evictedId).toBeDefined();
+			if (!evictedId) throw new Error("Expected the resident terminal-ref bound to evict a recipient");
+
+			const worker = makeFakeSession();
+			worker.setOutcome("woken");
+			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+				async ref => (ref.id === evictedId ? async () => worker.session : undefined),
+				() => 0,
+			);
+			const result = await executeSend(
+				{ registry, senderId: "0-Main", sessionFileHint: rootFile },
+				{ to: evictedId, message: "resume this task" },
+			);
+			expect(result.isError).not.toBe(true);
+			expect(worker.delivered.map(message => message.body)).toEqual(["resume this task"]);
+			expect(registry.get(evictedId)?.session).toBe(worker.session);
+			expect(registry.get(evictedId)?.status).toBe("idle");
 		});
 
 		it("send fails cleanly when a parked recipient has no reviver", async () => {
@@ -524,6 +693,30 @@ describe("IRC", () => {
 		});
 	});
 
+	it("makes a streaming IRC interrupt visible before the next turn boundary", async () => {
+		const bridge = new IrcBridge({
+			agent: new Agent(),
+			sessionManager: SessionManager.inMemory("/tmp"),
+			isDisposed: () => false,
+			isStreaming: () => true,
+			isRestartDraining: () => false,
+			queueForRestart: async () => {},
+			planModeEnabled: () => false,
+			emitSessionEvent: async () => {},
+			wakeForIrc: () => {},
+		});
+		const delivery = bridge.deliver({
+			id: "same-turn",
+			from: "Sender",
+			to: "Recipient",
+			body: "stop",
+			ts: Date.now(),
+		});
+		expect(bridge.hasInterrupts()).toBe(true);
+		expect(bridge.hasQueuedFrom("Sender")).toBe(true);
+		expect(await delivery).toBe("injected");
+	});
+
 	describe("wake-turn replies to broadcasts", () => {
 		/**
 		 * An idle subagent wired like a real one: deliveries go through the real
@@ -559,6 +752,8 @@ describe("IRC", () => {
 			const bridge = new IrcBridge({
 				isDisposed: () => false,
 				isStreaming: () => false,
+				isRestartDraining: () => false,
+				queueForRestart: async () => {},
 				planModeEnabled: () => false,
 				emitSessionEvent: async () => {},
 				wakeForIrc: wake,
@@ -775,6 +970,111 @@ describe("IRC", () => {
 			expect(outcome).toBe("injected");
 			expect(promptSpy).not.toHaveBeenCalled();
 			expect(await session.agent.hasIrcInterrupts?.()).toBe(true);
+		});
+
+		it("queues parent IRC behind an explicitly reserved idle child brief", async () => {
+			const { session } = createRealSession();
+			sessions.push(session);
+			const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+			registry.register({
+				id: "0-Child",
+				displayName: "task",
+				kind: "sub",
+				parentId: "Main",
+				session,
+				initialPromptPending: true,
+			});
+			const outcome = await session.deliverIrcMessage({
+				id: "msg-dispatching",
+				from: "Main",
+				to: "0-Child",
+				body: "after the brief",
+				ts: Date.now(),
+			});
+			expect(outcome).toBe("injected");
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(session.agent.peekSteeringQueue()).toHaveLength(0);
+			expect(session.agent.peekFollowUpQueue()).toHaveLength(1);
+			const queuedMessage = session.agent.peekFollowUpQueue()[0]!;
+			expect(queuedMessage).toMatchObject({ customType: "irc:incoming" });
+			if (!("content" in queuedMessage)) throw new Error("Queued IRC message has no content");
+			expect(String(queuedMessage.content)).not.toContain("Active interruptible wait stopped");
+		});
+
+		it("persists undelivered pre-brief messages if setup is disposed before dispatch", async () => {
+			const dir = TempDir.createSync("@pi-aborted-brief-");
+			const manager = SessionManager.create(dir.path(), dir.path());
+			const { session } = createRealSession({}, manager);
+			sessions.push(session);
+			try {
+				await manager.ensureOnDisk();
+				const sessionFile = manager.getSessionFile()!;
+				registry.register({
+					id: "0-Child",
+					displayName: "task",
+					kind: "sub",
+					parentId: "Main",
+					session,
+					initialPromptPending: true,
+				});
+				await session.deliverIrcMessage({
+					id: "abort-before-brief",
+					from: "Main",
+					to: "0-Child",
+					body: "retain me",
+					ts: Date.now(),
+				});
+				await session.dispose();
+				expect(await Bun.file(sessionFile).text()).toContain("retain me");
+				expect(session.agent.peekFollowUpQueue()).toHaveLength(0);
+			} finally {
+				await session.dispose();
+				dir.removeSync();
+			}
+		});
+
+		it("wakes a stale running child rather than stranding its message behind a nonexistent brief", async () => {
+			const { session } = createRealSession();
+			sessions.push(session);
+			const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+			registry.register({ id: "0-Child", displayName: "task", kind: "sub", parentId: "Main", session });
+			const outcome = await session.deliverIrcMessage({
+				id: "stale",
+				from: "Main",
+				to: "0-Child",
+				body: "wake now",
+				ts: Date.now(),
+			});
+			expect(outcome).toBe("woken");
+			await Promise.resolve();
+			expect(promptSpy).toHaveBeenCalled();
+			expect(session.agent.peekFollowUpQueue()).toHaveLength(0);
+		});
+
+		it("keeps a pre-brief peer message outside the parent's accepted-result turn", async () => {
+			const { session } = createRealSession();
+			sessions.push(session);
+			const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+			registry.register({
+				id: "0-Child",
+				displayName: "task",
+				kind: "sub",
+				parentId: "Main",
+				session,
+				initialPromptPending: true,
+			});
+			const outcome = await session.deliverIrcMessage({
+				id: "peer-before-brief",
+				from: "0-Peer",
+				to: "0-Child",
+				body: "answer separately",
+				ts: Date.now(),
+			});
+			expect(outcome).toBe("injected");
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(session.agent.peekSteeringQueue()).toHaveLength(0);
+			expect(session.agent.peekFollowUpQueue()).toHaveLength(0);
+			expect(session.ircWakesPending).toBe(true);
 		});
 
 		it("queues a mid-turn broadcast or progress note for the next boundary without interrupting a wait", async () => {

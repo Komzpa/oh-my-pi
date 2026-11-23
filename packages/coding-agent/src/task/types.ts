@@ -42,8 +42,45 @@ export interface SubagentEventPayload {
 
 // Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
 const outputSchemaInputSchema = type("object | boolean | string | null");
+const evalToolsField = type("string[]").describe(
+	"Names of eval-defined tools only; built-in tools come from the agent profile.",
+);
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
+const peerScopeSchema = type({
+	"root?": "string",
+	"branch?": "string",
+	"paths?": "string[]",
+	"resources?": "string[]",
+	"ports?": "number[]",
+});
 const effortRule = '"lo" | "med" | "hi"' as const;
+// Image attachment delivered to the child's first prompt as a real image
+// content part. Bytes travel by reference: ledger-produced images carry
+// `artifactPath`/`sourcePath` with no `data`. Invariant: at least one byte
+// source is required. A single shape with a narrow check keeps the schema
+// deterministic (omptype rejects overlapping morph unions and their
+// intersections); the provider grammar sees one object, runtime rejects
+// sourceless images.
+const taskImageSchema = type({
+	type: "'image'",
+	mimeType: "string",
+	"data?": "string",
+	"sha256?": "string",
+	"rn?": "string",
+	"index?": "number",
+	"sourcePath?": "string",
+	"artifactPath?": "string",
+	"+": "delete",
+}).narrow((image, ctx) => {
+	const hasSource = (value: unknown): boolean => typeof value === "string" && value.length > 0;
+	return (
+		hasSource(image.data) ||
+		hasSource(image.artifactPath) ||
+		hasSource(image.sourcePath) ||
+		ctx.mustBe("an image with a byte source (data, artifactPath, or sourcePath)")
+	);
+});
+const taskImagesRule = taskImageSchema.array();
 
 /**
  * Keep a batch item's `model` key through undeclared-key deletion: argument
@@ -62,47 +99,97 @@ function keepItemModelKey<T, I>(item: FluentType<T, I>): FluentType<unknown, I> 
 	});
 }
 
+const workspaceRule = type({
+	repo: type("string").describe("Absolute source Git repository path; never inferred from task prose."),
+	base: type("string").describe(
+		"Commit available in repo, resolved to an exact SHA before admission. Use bash git fetch if missing.",
+	),
+	"path?": type("string").describe(
+		"Existing absolute checkout of the same repository at exactly base. Omit to prepare a private checkout at base.",
+	),
+});
+const workspaceFields = {
+	"workspace?": workspaceRule,
+	"reads?": type("string[]").describe("Absolute existing files or directories to read; these do not grant writes."),
+};
+
 export const taskItemSchema = type({
+	"artifact?": "string",
+	"images?": taskImagesRule,
 	"name?": "string",
+	"requirementIds?": "string[]",
 	agent: "string = 'task'",
+	"resources?": "string[]",
+	...workspaceFields,
 	task: "string",
 	solutionSpace: "string",
+	"row?": "string",
+	"readOnly?": "boolean",
+	"rework?": "string",
+	"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"+": "delete",
 });
 const taskItemSchemaIsolated = type({
+	"artifact?": "string",
 	"name?": "string",
+	"requirementIds?": "string[]",
 	agent: "string = 'task'",
+	"resources?": "string[]",
+	...workspaceFields,
 	task: "string",
 	solutionSpace: "string",
+	"row?": "string",
+	"readOnly?": "boolean",
+	"rework?": "string",
+	"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"isolated?": "boolean",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 
 export const taskSchema = type({
+	"artifact?": "string",
 	"name?": "string",
+	"requirementIds?": "string[]",
 	agent: "string = 'task'",
+	"resources?": "string[]",
+	...workspaceFields,
 	task: "string",
 	solutionSpace: "string",
+	"row?": "string",
+	"readOnly?": "boolean",
+	"rework?": "string",
+	"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"isolated?": "boolean",
+	"images?": taskImagesRule,
 	"+": "delete",
 });
 const taskSchemaNoIsolation = type({
+	"artifact?": "string",
+	"images?": taskImagesRule,
 	"name?": "string",
+	"requirementIds?": "string[]",
 	agent: "string = 'task'",
+	"resources?": "string[]",
+	...workspaceFields,
 	task: "string",
 	solutionSpace: "string",
+	"row?": "string",
+	"readOnly?": "boolean",
+	"rework?": "string",
+	"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
+	"tools?": evalToolsField,
 	"+": "delete",
 });
 function guardBatchAgent(schema: BaseType): BaseType {
@@ -150,6 +237,7 @@ function taskAgentSchemaRule(defaultAgent: string): string {
 }
 
 function createTaskSchema(options: {
+	peerAwareness?: boolean;
 	isolationEnabled: boolean;
 	batchEnabled: boolean;
 	defaultAgent: string;
@@ -165,7 +253,7 @@ function createTaskSchema(options: {
 	const schemaFields = options.structured
 		? { "outputSchema?": outputSchemaInputSchema, "schemaMode?": '"permissive" | "strict"' }
 		: {};
-	const toolsField = options.evalToolsEnabled ? { "tools?": "string[]" } : {};
+	const toolsField = options.evalToolsEnabled ? { "tools?": evalToolsField } : {};
 	// `model` is declared only when the caller may send it: a per-call selector
 	// while `task.perCallModel` allows task calls. An
 	// undeclared `model` still reaches preflight (root keys survive lenient
@@ -174,15 +262,25 @@ function createTaskSchema(options: {
 	if (options.batchEnabled) {
 		if (options.isolationEnabled) {
 			const item = type.raw({
+				"artifact?": "string",
 				"name?": "string",
+				"requirementIds?": "string[]",
 				agent,
 				...taskFields,
 				solutionSpace: "string",
+				"row?": "string",
+				"readOnly?": "boolean",
+				"rework?": "string",
+				"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 				...effortField,
+				...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 				...schemaFields,
 				...toolsField,
 				...gatedFields,
+				"resources?": "string[]",
+				...workspaceFields,
 				"isolated?": "boolean",
+				"images?": taskImagesRule,
 				"+": "delete",
 			});
 			return guardBatchAgent(
@@ -194,14 +292,24 @@ function createTaskSchema(options: {
 			);
 		}
 		const item = type.raw({
+			"artifact?": "string",
 			"name?": "string",
+			"requirementIds?": "string[]",
 			agent,
+			"resources?": "string[]",
+			...workspaceFields,
 			...taskFields,
 			solutionSpace: "string",
+			"row?": "string",
+			"readOnly?": "boolean",
+			"rework?": "string",
+			"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 			...effortField,
+			...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 			...schemaFields,
 			...toolsField,
 			...gatedFields,
+			"images?": taskImagesRule,
 			"+": "delete",
 		});
 		return guardBatchAgent(
@@ -214,33 +322,54 @@ function createTaskSchema(options: {
 	}
 	if (options.isolationEnabled) {
 		return type.raw({
+			"artifact?": "string",
 			"name?": "string",
+			"requirementIds?": "string[]",
 			agent,
 			...taskFields,
 			solutionSpace: "string",
+			"row?": "string",
+			"readOnly?": "boolean",
+			"rework?": "string",
+			"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 			...effortField,
+			...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 			...schemaFields,
 			...toolsField,
 			...gatedFields,
+			"resources?": "string[]",
+			...workspaceFields,
 			"isolated?": "boolean",
+			"images?": taskImagesRule,
 			"+": "delete",
 		});
 	}
 	return type.raw({
+		"artifact?": "string",
 		"name?": "string",
+		"requirementIds?": "string[]",
 		agent,
+		"resources?": "string[]",
+		...workspaceFields,
 		...taskFields,
 		solutionSpace: "string",
+		"row?": "string",
+		"readOnly?": "boolean",
+		"rework?": "string",
+		"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 		...effortField,
+		...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 		...schemaFields,
 		...toolsField,
 		...gatedFields,
+		"images?": taskImagesRule,
 		"+": "delete",
 	});
 }
 
 /** Build the task wire schema for the current settings and spawn policy. */
 export function getTaskSchema(options: {
+	peerAwareness?: boolean;
 	isolationEnabled: boolean;
 	batchEnabled: boolean;
 	effortEnabled?: boolean;
@@ -260,11 +389,19 @@ export function getTaskSchema(options: {
 	const structured = options.structured ?? true;
 	const steps = options.steps ?? false;
 	const perCallModel = options.perCallModel ?? false;
-	if (defaultAgent === "task" && !effortEnabled && evalToolsEnabled && structured && !steps && !perCallModel) {
+	if (
+		!options.peerAwareness &&
+		defaultAgent === "task" &&
+		!effortEnabled &&
+		evalToolsEnabled &&
+		structured &&
+		!steps &&
+		!perCallModel
+	) {
 		if (options.batchEnabled) return options.isolationEnabled ? taskSchemaBatch : taskSchemaBatchNoIsolation;
 		return options.isolationEnabled ? taskSchema : taskSchemaNoIsolation;
 	}
-	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${structured ? "structured" : "prose"}:${steps ? "steps" : "task"}:${perCallModel ? "model" : "nomodel"}:${defaultAgent}`;
+	const key = `${options.peerAwareness ? "peers" : "nopeers"}:${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${structured ? "structured" : "prose"}:${steps ? "steps" : "task"}:${perCallModel ? "model" : "nomodel"}:${defaultAgent}`;
 	const cached = taskSchemaCache.get(key);
 	if (cached) return cached;
 	const schema = createTaskSchema({
@@ -291,6 +428,8 @@ export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): b
 
 /** Agent definition (bundled or discovered) */
 export interface AgentDefinition {
+	/** Effective dispatch contract; independent of shell/browser capabilities. */
+	readOnly?: boolean;
 	name: string;
 	description: string;
 	systemPrompt: string;
@@ -305,6 +444,8 @@ export interface AgentDefinition {
 	autoloadSkills?: string[];
 	/** When `false`, the agent's `read` tool returns verbatim file content instead of structural summaries. */
 	readSummarize?: boolean;
+	/** Overrides task.agentsMd for this agent. */
+	agentsMd?: "strip" | "project";
 	/** Prewalk hand-off for the spawned session: `true` = switch to the default prewalk target at the first edit/write, string = custom target model pattern. */
 	prewalk?: boolean | string;
 	/** Advisor for spawned sessions of this agent: `true` = advise with the default advisor-role model, string = advise with that model pattern (optional `:level` suffix). Absent/`false` = no advisor. */

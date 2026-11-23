@@ -87,6 +87,9 @@ describe("EvalTool auto-background", () => {
 		vi.restoreAllMocks();
 	});
 
+	// "excludes only the submitting JS cell from terminal checks" exercised `tool.yield` from a cell;
+	// upstream 6b4d6f312211 rejects yield through the eval bridge, so no cell can yield any more.
+
 	it("keeps fast cells inline without a job row or delivery", async () => {
 		const deliveries: string[] = [];
 		const asyncJobManager = new AsyncJobManager({

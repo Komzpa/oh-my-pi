@@ -740,10 +740,31 @@ class PythonEmitter {
 			...new Set(extraImports),
 			`from ._wire_runtime import (\n${runtimeImports.map(name => `    ${name},\n`).join("")})`,
 		].join("\n");
-		const exportsList = `__all__ = [\n${[...new Set(this.#exports)]
-			.sort()
-			.map(name => `    ${pyString(name)},\n`)
-			.join("")}]\n`;
+		const appendOnlyTodoScheduleExports = new Set([
+			"TodoConfidence",
+			"TodoEstimate",
+			"TodoReworkAttempt",
+			"TodoSchedule",
+			"TodoScheduleExecutor",
+			"TodoScheduleProgress",
+			"TodoWorkerOutcome",
+			"parse_todo_estimate",
+			"parse_todo_rework_attempt",
+			"parse_todo_schedule",
+			"parse_todo_schedule_executor",
+			"parse_todo_schedule_progress",
+		]);
+		const allExports = [...new Set(this.#exports)];
+		const deferredExports = allExports.filter(name => appendOnlyTodoScheduleExports.has(name)).sort();
+		const exportsList =
+			`__all__ = [\n${allExports
+				.filter(name => !appendOnlyTodoScheduleExports.has(name))
+				.sort()
+				.map(name => `    ${pyString(name)},\n`)
+				.join("")}]\n` +
+			(deferredExports.length
+				? `__all__.extend([\n${deferredExports.map(name => `    ${pyString(name)},\n`).join("")}])\n`
+				: "");
 		return [
 			header,
 			...enums,

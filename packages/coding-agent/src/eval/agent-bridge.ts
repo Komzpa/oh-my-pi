@@ -4,6 +4,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { Settings } from "../config/settings";
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
+import { purposeAgentName, sanitizeAgentId } from "../task/name-generator";
 import { createEvalCustomTools, describeEvalTools } from "../task/eval-tools";
 import {
 	buildStructuredSubagentRecoveryHint,
@@ -214,7 +215,8 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		if (!manager) {
 			throw new ToolError("agent() needs the session's async job manager; unavailable here");
 		}
-		const id = await reserveStructuredSubagentId(options.session, { label: parsed.label });
+		const label = sanitizeAgentId(parsed.label) ? parsed.label : purposeAgentName(policy.agentName);
+		const id = await reserveStructuredSubagentId(options.session, { label });
 		const ownerId = options.session.getAgentId?.() ?? MAIN_AGENT_ID;
 		manager.register(
 			"task",
@@ -231,7 +233,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 						...(parsed.model !== undefined ? { perCallModel: parsed.model } : {}),
 						...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
 						...(parsed.schemaMode !== undefined ? { schemaMode: parsed.schemaMode } : {}),
-						identity: { id, label: parsed.label },
+						identity: { id, label },
 						...(isolation ? { isolation } : {}),
 						...(customTools ? { customTools } : {}),
 						retainArtifacts: true,

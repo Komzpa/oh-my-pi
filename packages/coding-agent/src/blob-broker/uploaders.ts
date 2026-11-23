@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { directoryIsEnterableSync, getProjectDir, logger } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { type BlobDestinationId, type BlobDestinationMetadata, BUILTIN_BLOB_DESTINATIONS } from "./destinations";
 import type { BlobPublication, BlobUploader, BlobUploadRequest } from "./publication";
 import {
@@ -110,7 +111,7 @@ export function createCommandUploader(template: string, spawnContext?: Destinati
 				if (!directoryIsEnterableSync(cwd)) {
 					throw new Error(`Project directory is not accessible: ${cwd}`);
 				}
-				const proc = Bun.spawn(argv, {
+				const proc = spawnBackground(argv, {
 					stdin: "ignore",
 					stdout: "pipe",
 					stderr: "pipe",

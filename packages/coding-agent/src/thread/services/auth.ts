@@ -294,6 +294,11 @@ function serveAuthStorage(state: PeerAuthState): RpcServe<AuthStorage, AuthStora
 		"usage.replaceConfiguredProviders": (storage, providers) =>
 			storage.usage.replaceConfiguredProviders(new Map(providers)),
 
+		"health.isProviderDepleted": (storage, provider) => storage.health.isProviderDepleted(provider),
+		"health.markProviderDepleted": (storage, provider, options) =>
+			storage.health.markProviderDepleted(provider, options),
+		"health.markProviderSucceeded": (storage, provider) => storage.health.markProviderSucceeded(provider),
+		"health.resetProviderDepletion": (storage, provider) => storage.health.resetProviderDepletion(provider),
 		"health.model": (storage, provider, options) => storage.health.model(provider, options),
 		"health.check": (storage, options) => {
 			if (!options) return storage.health.check();

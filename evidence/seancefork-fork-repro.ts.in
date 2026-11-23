@@ -1,0 +1,18 @@
+// Before running: git show 66c38306f7d7a69729152ca9b1a2c1c9c9e820f9:packages/coding-agent/src/session/session-manager.ts > packages/coding-agent/src/session/session-manager.before.ts
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { SessionManager } from "../packages/coding-agent/src/session/session-manager";
+import { SessionManager as BeforeManager } from "../packages/coding-agent/src/session/session-manager.before";
+const [mode, source, destination] = process.argv.slice(2);
+const io = () => Number(fs.readFileSync("/proc/self/io", "utf8").match(/rchar: (\d+)/)![1]);
+let last = performance.now(), maximum = 0;
+const timer = setInterval(() => { const now=performance.now(); maximum=Math.max(maximum,now-last); last=now; },10);
+await Bun.sleep(20);
+const bytes=io(), start=performance.now();
+const manager = await (mode === "before" ? BeforeManager : SessionManager).forkFrom(source, path.dirname(destination), undefined, undefined, { seance:true, suppressBreadcrumb:true,sessionFile:destination,resetInheritedCost:true,repairInterruptedTail:true });
+const wallMs=performance.now()-start, rcharBytes=io()-bytes;
+await Bun.sleep(20);
+const maxIntervalMs=maximum;
+clearInterval(timer);
+console.log(JSON.stringify({mode,wallMs,rcharBytes,maxIntervalMs,sourceBytes:fs.statSync(source).size,childBytes:fs.statSync(destination).size,contextMessages:manager.buildSessionContext().messages.length},null,2));
+await manager.close();

@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { VibeToolDetails } from "@oh-my-pi/pi-tui/tools/vibe";
 import { AsyncJobManager } from "../../src/async/job-manager";
+import { SessionManager } from "../../src/session/session-manager";
 import type { ToolSession } from "../../src/tools";
 import { VibeListTool, VibeWaitTool } from "../../src/tools/vibe";
-import { VibeSessionRegistry } from "../../src/vibe/runtime";
+import { type VibeParentSession, VibeSessionRegistry } from "../../src/vibe/runtime";
 
 const OWNER = "test-owner";
 
@@ -97,4 +98,54 @@ describe("vibe wall hides director-killed sessions", () => {
 			expect(frame.screens.map(screen => screen.id)).toEqual(["Worker"]);
 		}
 	});
+});
+
+describe("vibe optional journal capabilities", () => {
+	for (const selective of [false, true]) {
+		it(`rehydrates and recognizes an exited mode with ${selective ? "selective" : "legacy"} journal access`, async () => {
+			const journal = SessionManager.inMemory();
+			journal.appendModeChange("none");
+			const fullBranch = spyOn(journal, "getBranch");
+			if (selective)
+				fullBranch.mockImplementation(() => {
+					throw new Error("full branch read");
+				});
+			const matching = spyOn(journal, "getBranchMatching");
+			const latest = spyOn(journal, "getLatestBranchMatching");
+			const parent: VibeParentSession = {
+				...session,
+				getSessionFile: () => "/tmp/vibe-capability-parent.jsonl",
+				sessionManager: {
+					appendCustomEntry: journal.appendCustomEntry.bind(journal),
+					ensureOnDisk: journal.ensureOnDisk.bind(journal),
+					flush: journal.flush.bind(journal),
+					getEntries: selective
+						? () => {
+								throw new Error("full journal read");
+							}
+						: journal.getEntries.bind(journal),
+					getBranch: journal.getBranch.bind(journal),
+					...(selective
+						? {
+								iterateEntries: journal.iterateEntries.bind(journal),
+								getBranchMatching: journal.getBranchMatching.bind(journal),
+								getLatestBranchMatching: journal.getLatestBranchMatching.bind(journal),
+							}
+						: {}),
+				},
+			};
+			try {
+				expect(await VibeSessionRegistry.global().rehydrate(parent)).toBe(0);
+				expect(await VibeSessionRegistry.global().killAll(parent)).toBe(0);
+				expect(fullBranch.mock.calls.length).toBe(selective ? 0 : 2);
+				expect(matching.mock.calls.length).toBe(selective ? 1 : 0);
+				expect(latest.mock.calls.length).toBe(selective ? 1 : 0);
+			} finally {
+				fullBranch.mockRestore();
+				matching.mockRestore();
+				latest.mockRestore();
+				await journal.close();
+			}
+		});
+	}
 });

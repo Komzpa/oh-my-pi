@@ -11,11 +11,15 @@
  * collisions across repeated or nested task invocations.
  */
 import * as fs from "node:fs/promises";
-import { ADVISOR_TRANSCRIPT_STEM } from "../advisor/transcript-recorder";
+import { ADVISOR_TRANSCRIPT_STEM } from "../advisor/transcript-names";
 import type { Settings } from "../config/settings";
 import { cfgTaskCrossInstance } from "./settings";
+
 /** HUD expander click target reserved by the allocator so it cannot name a subagent. */
 export const PINNED_HUD_TOGGLE_ID = "@omp:toggle-pinned-hud";
+
+/** Trailing `-<n>` runs left by earlier collision suffixes (`-3`, `-3-2`). */
+const COLLISION_SUFFIX_CHAIN = /(?:-\d+)+$/;
 
 /**
  * Manages agent output ID allocation to ensure uniqueness.
@@ -84,11 +88,23 @@ export class AgentOutputManager {
 		}
 	}
 
-	/** Pick the first free name (base, then `base-2`, `base-3`, …) and reserve it. */
+	/**
+	 * Pick the first free name (base, then `base-2`, `base-3`, …) and reserve it.
+	 *
+	 * A requested id that is itself a collision chain of a taken id
+	 * (`Worker-3-2` while `Worker` is taken) restarts from that base instead of
+	 * growing the chain (`Worker-3-2-2`). A suffix on an id whose base is not
+	 * taken (`gpt-5`) is part of the name and is kept.
+	 */
 	#allocateUnique(id: string): string {
 		let candidate = id;
-		for (let n = 2; this.#taken.has(candidate); n++) {
-			candidate = `${id}-${n}`;
+		if (this.#taken.has(id)) {
+			const base = id.replace(COLLISION_SUFFIX_CHAIN, "");
+			const root = base.length > 0 && base !== id && this.#taken.has(base) ? base : id;
+			candidate = `${root}-2`;
+			for (let n = 3; this.#taken.has(candidate); n++) {
+				candidate = `${root}-${n}`;
+			}
 		}
 		this.#taken.add(candidate);
 		return this.#parentPrefix ? `${this.#parentPrefix}.${candidate}` : candidate;
@@ -116,9 +132,19 @@ export class AgentOutputManager {
 	 * @param id Requested ID (e.g., "Anna")
 	 * @returns Unique ID ("Anna" first, then "Anna-2", "Anna-3", …)
 	 */
-	async allocate(id: string): Promise<string> {
+	async allocate(id: string, attempt?: number): Promise<string> {
 		await this.#ensureInitialized();
 		const usePrefix = /^\d+$/.test(id) && this.#settings && cfgTaskCrossInstance.get(this.#settings);
-		return this.#allocateUnique(usePrefix ? `Agent${id}` : id);
+		if (usePrefix) id = `Agent${id}`;
+		if (attempt !== undefined) {
+			let ordinal = Math.max(1, attempt);
+			for (const taken of this.#taken) {
+				if (!taken.startsWith(`${id}-`)) continue;
+				const suffix = taken.slice(id.length + 1);
+				if (/^\d+$/.test(suffix)) ordinal = Math.max(ordinal, Number(suffix) + 1);
+			}
+			id = `${id}-${ordinal}`;
+		}
+		return this.#allocateUnique(id);
 	}
 }

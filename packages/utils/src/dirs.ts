@@ -812,6 +812,28 @@ export function getPythonGatewayDir(): string {
 	return dirs.agentSubdir(undefined, "python-gateway", "state");
 }
 
+/**
+ * Get the cross-process provider exhaustion cooldown file
+ * (~/.omp/agent/provider-cooldowns.json; XDG default: $XDG_STATE_HOME/omp/provider-cooldowns.json).
+ * `bun test` processes get a per-process temp path instead, so suites never read or write the
+ * developer's real ban list.
+ */
+export function getProviderCooldownsPath(): string {
+	if (isBunTestRuntime()) {
+		const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().username;
+		// One bun process runs many test files (parallel workers reuse it), and the per-file module
+		// isolation does not reset this file: scope it to the test file too, so one file's recorded
+		// outages never make another file's providers unavailable.
+		const file = Bun.hash(Bun.main).toString(36);
+		return path.join(
+			os.tmpdir(),
+			`omp-test-provider-cooldowns-${uid}-${process.pid}-${file}`,
+			"provider-cooldowns.json",
+		);
+	}
+	return dirs.agentSubdir(undefined, "provider-cooldowns.json", "state");
+}
+
 /** Get the managed Antigravity CLI directory (~/.omp/antigravity-cli): the `agy` binary and its isolated state. */
 export function getAntigravityCliDir(): string {
 	return dirs.rootSubdir("antigravity-cli", "data");
@@ -1165,10 +1187,15 @@ export function getDaemonDir(): string {
 	return dirs.baseRootSubdir(path.join("run", "daemon"), "state");
 }
 
+/** Root of the per-project runtime directories (~/.omp/run/daemons; XDG default: $XDG_STATE_HOME/omp/run/daemons). */
+export function getDaemonRuntimeRoot(): string {
+	return dirs.rootSubdir(path.join("run", "daemons"), "state");
+}
+
 /** Get the per-project runtime directory (~/.omp/run/daemons/<hash>; XDG default: $XDG_STATE_HOME/omp/run/daemons/<hash>). */
 export function getDaemonRuntimeDir(projectDir: string): string {
 	const key = Bun.hash.wyhash(path.resolve(projectDir)).toString(16).padStart(16, "0");
-	return path.join(dirs.rootSubdir(path.join("run", "daemons"), "state"), key);
+	return path.join(getDaemonRuntimeRoot(), key);
 }
 
 /**

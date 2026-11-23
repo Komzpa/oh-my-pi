@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Retry-hint parsing now understands "try again in N seconds" spelled out.
 - `ptree` child processes spawned without an explicit `env` now inherit `Bun.env`, including values loaded from `.env` files after startup, on every platform rather than only under the Linux subreaper.
 
 ## [19.1.0] - 2026-11-21

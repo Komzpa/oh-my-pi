@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import { writeRemoteFile } from "../ssh/file-transfer";
 import type { BlobDestinationId } from "./destinations";
 import type { BlobUploader, BlobUploadRequest, RemoteDeleteAction } from "./publication";
@@ -244,7 +245,7 @@ function createFtpUploader(config: DestinationRuntimeConfig): BlobUploader {
 			args.push(ftpUploadUrl(protocol, host, port, destinationPath));
 			try {
 				const spawn = destinationSpawnContext(config.spawn);
-				const process = Bun.spawn(args, {
+				const process = spawnBackground(args, {
 					stdin: request.bytes,
 					stdout: "ignore",
 					stderr: "pipe",

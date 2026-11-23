@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Agent, AgentMessage, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
+import { needsNormalProseSpacing } from "@oh-my-pi/pi-catalog/compat/prose-spacing";
 import { resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
 import { isRecord, logger, prompt, stringProperty, structuredCloneJSON, untilAborted } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../capability";
@@ -72,6 +73,7 @@ import {
 	PERMISSION_OPTIONS_BY_ID,
 	PERMISSION_REQUIRED_TOOLS,
 } from "./acp-permission-gate";
+import { resolveToolTier } from "../tools/approval";
 import type { ClientBridge, ClientBridgePermissionOutcome } from "./client-bridge";
 import { type BuildSystemPromptResult, toolReadsSkillUris } from "../system-prompt";
 import { matchModelPattern } from "../utils/model-patterns";
@@ -154,6 +156,7 @@ export interface SessionToolsHost {
 	steeringArrivalRelease(seq: number): void;
 	queuedMessageCount(): number;
 	planModeEnabled(): boolean;
+	planningRepairMessage?(): string | undefined;
 	model(): Model | undefined;
 	memoryBackendSession(): MemoryBackendStartOptions["session"];
 	clearInheritedProviderPromptCacheKey(): void;
@@ -192,6 +195,8 @@ export type SystemPromptRebuilder = (
 ) => Promise<BuildSystemPromptResult>;
 
 interface SessionToolsOptions {
+	getStartupContext?: () => string | undefined;
+	memoryAgentDir?: string;
 	autoApprove?: boolean;
 	toolRegistry?: Map<string, AgentTool>;
 	createVibeTools?: () => AgentTool[];
@@ -208,6 +213,10 @@ interface SessionToolsOptions {
 	mcpManagerToolNames?: Iterable<string>;
 	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
 	ensureGoalRegistered?: () => Promise<boolean>;
+	/** True when `write` is only the agent:// reply transport of a read-only agent. */
+	isAgentOnlyWrite?: () => boolean;
+	/** Clears the agent-only restriction when a runtime caller explicitly selects `write`. */
+	clearAgentOnlyWrite?: () => void;
 	/**
 	 * Re-resolves settings-gated tools against live settings, mutating the shared
 	 * registry; `isBuiltIn` reports this session's built-in provenance.
@@ -236,6 +245,9 @@ interface SystemPromptPreparation {
 	systemPrompt: string[];
 	/** Memory backend note to deliver with the turn ({@link MemoryPromptPreparation.notice}). */
 	memoryNotice?: MemoryPromptPreparation["notice"];
+	/** Dynamic memory delivered as a persisted conversation message. */
+	startupContext?: { content: string; details: { cwd: string } };
+	memoryContext?: { content: string; details: { backend: string; cwd: string; scope?: string; recall?: string } };
 	/** Publish staged state at validated delivery; false declines the prepared turn without mutation. */
 	commit?(): boolean;
 }
@@ -315,9 +327,17 @@ const TOOL_COMMAND_MOUNT_NOTICE_MESSAGE_TYPE = "tool-command-mount-notice";
 const EVAL_PRELUDE_NOTICE_MESSAGE_TYPE = "eval-prelude-notice";
 const EVAL_PRELUDE_GUIDE_MESSAGE_TYPE = "eval-prelude-guide";
 const SKILL_NOTICE_MESSAGE_TYPE = "skill-notice";
+const PLANNING_CONTROL_TOOLS: Record<string, true> = {
+	todo: true,
+	task: true,
+	ask: true,
+	hub: true,
+	think: true,
+	yield: true,
+};
 
 /** Custom entry holding the digest of the base prompt the branch's primary model calls are built from. */
-const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
+export const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
 
 /**
  * Least time between two rediscoveries started by `skill://` names no loaded skill owns, so a typo
@@ -471,12 +491,6 @@ export class SessionTools {
 	#capturedPromptDigest: string | undefined;
 	/** Base-prompt digest each primary reply with provider output was produced under. */
 	readonly #replyPromptDigests = new WeakMap<AgentMessage, string>();
-	/**
-	 * Newest digest found in a branch view and how much of it was scanned. The
-	 * session manager's memoized view only grows in place, so a later read of
-	 * the same array scans just the appended entries.
-	 */
-	#recordedDigestScan: { branch: readonly SessionEntry[]; scanned: number; digest: string | undefined } | undefined;
 	/** {@link currentPromptDigest} for the base prompt array it hashed. */
 	#currentPromptDigest: { base: readonly string[]; digest: string } | undefined;
 	/**
@@ -539,6 +553,7 @@ export class SessionTools {
 	#promptSurfaceScope = new AsyncLocalStorage<PromptSurface>();
 	#toolRegistryMutationTail: Promise<void> = Promise.resolve();
 	#promptModelKey: string | undefined;
+	#promptNormalProseSpacing = false;
 	/** Inline-descriptor decision of the model the base prompt was rendered for. */
 	#promptInlineDescriptors: boolean | undefined;
 	/** `systemPromptTemplates` path selected for the model the base prompt was rendered for. */
@@ -564,6 +579,8 @@ export class SessionTools {
 	});
 	#setActiveToolNames: SessionToolsOptions["setActiveToolNames"];
 	#ensureGoalRegistered: SessionToolsOptions["ensureGoalRegistered"];
+	#isAgentOnlyWrite: SessionToolsOptions["isAgentOnlyWrite"];
+	#clearAgentOnlyWrite: SessionToolsOptions["clearAgentOnlyWrite"];
 	#reconcileSettingsGatedTools: SessionToolsOptions["reconcileSettingsGatedTools"];
 	#skills: Skill[];
 	#promptSkills: Skill[];
@@ -584,10 +601,14 @@ export class SessionTools {
 	 * prefix without the intended prompt refresh. The refresh lifecycle updates it.
 	 */
 	#promptSurface: PromptSurface;
+	readonly #memoryAgentDir: string;
+	readonly #getStartupContext: (() => string | undefined) | undefined;
 	#acpPermissionDecisions = new Map<string, "allow_always" | "reject_always">();
 
 	constructor(host: SessionToolsHost, options: SessionToolsOptions) {
 		this.#host = host;
+		this.#getStartupContext = options.getStartupContext;
+		this.#memoryAgentDir = options.memoryAgentDir ?? host.settings.getAgentDir();
 		this.#autoApprove = options.autoApprove === true;
 		this.#toolRegistry = options.toolRegistry ?? new Map();
 		this.#createVibeTools = options.createVibeTools;
@@ -607,6 +628,8 @@ export class SessionTools {
 		}
 		this.#presentationPinnedToolNames = options.presentationPinnedToolNames;
 		this.#ensureGoalRegistered = options.ensureGoalRegistered;
+		this.#isAgentOnlyWrite = options.isAgentOnlyWrite;
+		this.#clearAgentOnlyWrite = options.clearAgentOnlyWrite;
 		this.#reconcileSettingsGatedTools = options.reconcileSettingsGatedTools;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
@@ -644,9 +667,11 @@ export class SessionTools {
 		}
 		this.#promptSurface = this.#derivePromptSurface();
 		this.#basePromptRoutedToolCommandNames = this.#routedSummaryToolCommandNames();
+		this.#promptNormalProseSpacing = needsNormalProseSpacing(this.#host.agent.state.model);
 		this.#promptModelKey = this.#currentPromptModelKey();
 		this.#promptInlineDescriptors = this.#currentInlineDescriptors();
 		this.#promptTemplate = this.#currentPromptTemplate();
+		this.#host.agent.setTools(this.#host.agent.state.tools.map(tool => this.#wrapToolForAcpPermission(tool)));
 	}
 
 	/** Mutable registry shared with controller hosts that inspect available tools. */
@@ -916,6 +941,11 @@ export class SessionTools {
 	/** Enabled MCP tools presented as eval namespace methods (`mcp.evalNamespaces`); the SDK builds their preludes. */
 	getEvalBoundToolNames(): string[] {
 		return [...this.#evalBoundNames];
+	}
+
+	/** True when `write` is only the agent:// reply transport of a read-only agent. */
+	get isAgentOnlyWrite(): boolean {
+		return this.#isAgentOnlyWrite?.() === true;
 	}
 
 	/** Whether the edit tool is registered. */
@@ -1188,7 +1218,7 @@ export class SessionTools {
 		if (cfgIncludeModelInPrompt.get(this.#host.settings)) return formatModelString(activeModel);
 		// The inline-descriptor decision is per model and selects both the prompt's
 		// tool catalog and provider-side description pruning (see `sdk.ts`).
-		return `delegation-bias:${resolveDelegationBias(activeModel)}|inline-descriptors:${this.#currentInlineDescriptors()}`;
+		return `delegation-bias:${resolveDelegationBias(activeModel)}|inline-descriptors:${this.#currentInlineDescriptors()}|prose-spacing:${needsNormalProseSpacing(activeModel)}`;
 	}
 
 	/**
@@ -1198,9 +1228,9 @@ export class SessionTools {
 	 * Delegation wording the prompt was rendered with: re-rendering them changed the prompt's bytes,
 	 * and the provider then wrote the whole cached conversation again on every hop. It still rebuilds
 	 * when the hop changes what the request must carry for the new model: the edit-mode policy
-	 * (#11983), the inline-descriptor decision, which also turns provider-side description pruning
-	 * on or off (#14200), or the `systemPromptTemplates` entry the model selects. The kept key makes a
-	 * later switch back to the rendered model a no-op, and a deliberate switch (`/model`, `setModel`)
+	 * (#11983), the prose-spacing mitigation, the inline-descriptor decision, which also turns provider-side
+	 * description pruning on or off (#14200), or the `systemPromptTemplates` entry the model selects. The kept
+	 * key makes a later switch back to the rendered model a no-op, and a deliberate switch (`/model`, `setModel`)
 	 * compares against the model the prompt describes.
 	 */
 	async syncAfterModelChange(previousEditMode: EditModeSetting, options?: { retryFallback?: boolean }): Promise<void> {
@@ -1208,7 +1238,14 @@ export class SessionTools {
 		const templateChanged = this.#currentPromptTemplate() !== this.#promptTemplate;
 		if (options?.retryFallback) {
 			const inlineDescriptorsChanged = this.#currentInlineDescriptors() !== this.#promptInlineDescriptors;
-			if (previousEditMode !== currentEditMode || inlineDescriptorsChanged || templateChanged) {
+			const proseSpacingChanged =
+				needsNormalProseSpacing(this.#host.agent.state.model) !== this.#promptNormalProseSpacing;
+			if (
+				previousEditMode !== currentEditMode ||
+				inlineDescriptorsChanged ||
+				proseSpacingChanged ||
+				templateChanged
+			) {
 				await this.refreshBaseSystemPrompt();
 			}
 			return;
@@ -1221,6 +1258,34 @@ export class SessionTools {
 		}
 	}
 
+	#wrapToolForPlanningAdmission<T extends AgentTool>(tool: T): T {
+		return new Proxy(tool, {
+			get: (target, prop) => {
+				if (prop !== "execute") return target[prop as keyof T];
+				return async (
+					toolCallId: string,
+					args: unknown,
+					signal: AbortSignal | undefined,
+					onUpdate: never,
+					ctx: AgentToolContext | undefined,
+				) => {
+					if (signal?.aborted) throw new ToolAbortError("Tool call cancelled");
+					const planningRepair = this.#host.planningRepairMessage?.();
+					if (
+						planningRepair &&
+						resolveToolTier(target, args) !== "read" &&
+						PLANNING_CONTROL_TOOLS[target.name] !== true
+					) {
+						throw new ToolError(
+							`${planningRepair}\nEvery non-read tool is refused until the whole plan has estimates and dependencies.`,
+						);
+					}
+					return await target.execute(toolCallId, args as never, signal, onUpdate, ctx as never);
+				};
+			},
+		}) as T;
+	}
+
 	/** Enabled MCP tools in their current presentation partition. */
 	getSelectedMCPToolNames(): string[] {
 		// Every connected MCP tool is enabled; presentation (top-level vs tool command) is
@@ -1228,29 +1293,21 @@ export class SessionTools {
 		return this.getEnabledToolNames().filter(name => isMCPToolName(name) && this.#toolRegistry.has(name));
 	}
 
-	/**
-	 * Wrap a tool with a permission-gate proxy when an ACP client is connected.
-	 * Only wraps tools whose name is in PERMISSION_REQUIRED_TOOLS and only when
-	 * the bridge exposes `requestPermission`. No-ops for all other cases.
-	 *
-	 * Bash follows its own approval resolution, including pattern allows, denials,
-	 * and critical overrides. The schema's implicit yolo default retains ACP's
-	 * client permission gate for unmatched bash commands; explicitly selecting
-	 * yolo opts out. Other tools keep their existing ACP gate behavior.
-	 */
+	/** Wrap direct and eval-bridged tools with planning admission, then ACP permission checks. */
 	#wrapToolForAcpPermission<T extends AgentTool>(tool: T): T {
+		const planningGatedTool = this.#wrapToolForPlanningAdmission(tool);
 		const bridge = this.#host.clientBridge();
-		// Match the capability+method gating pattern used by read/write/bash.
-		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return tool;
-		if (PERMISSION_REQUIRED_TOOLS[tool.name] !== true) return tool;
+		// Keep planning admission on every path, including tools without an ACP gate.
+		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return planningGatedTool;
+		if (PERMISSION_REQUIRED_TOOLS[tool.name] !== true) return planningGatedTool;
 		// Default-config ACP sessions still ask for executable calls even though
 		// the schema defaults to yolo; explicit yolo is an intentional opt-in.
 		if (tool.name !== "bash" && this.#isExplicitAutoApproveMode()) {
 			const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.#host.settings);
 			const toolPolicy = userPolicies[tool.name];
-			if (!toolPolicy || toolPolicy === "allow") return tool;
+			if (!toolPolicy || toolPolicy === "allow") return planningGatedTool;
 		}
-		return new Proxy(tool, {
+		return new Proxy(planningGatedTool, {
 			get: (target, prop) => {
 				if (prop !== "execute") return target[prop as keyof T];
 				return async (
@@ -1503,6 +1560,11 @@ export class SessionTools {
 			const goalRegistration = this.#ensureGoalRegistered?.();
 			if (goalRegistration) await untilAborted(signal, goalRegistration);
 		}
+		// A read-only agent's agent:// reply transport (`write`, gated to agent:// by WriteTool)
+		// is needed for as long as the session lives, whatever later selection omits it.
+		if (this.#isAgentOnlyWrite?.() === true && !toolNames.includes("write") && this.#builtInToolNames.has("write")) {
+			toolNames = [...toolNames, "write"];
+		}
 		const selectedTools = toolNames.flatMap(name => {
 			const tool = this.#toolRegistry.get(name);
 			return tool ? [{ name, tool }] : [];
@@ -1673,6 +1735,7 @@ export class SessionTools {
 			this.#recordPromptRoster(validToolNames);
 			this.#promptModelKey = this.#currentPromptModelKey();
 			this.#promptInlineDescriptors = this.#currentInlineDescriptors();
+			this.#promptNormalProseSpacing = needsNormalProseSpacing(this.#host.agent.state.model);
 			this.#promptTemplate = this.#currentPromptTemplate();
 			this.#setBasePromptToolCommandNames(rebuiltToolCommandCatalogNames);
 			// The rebuilt prompt is a fresh roster snapshot. Keep the complete
@@ -1723,26 +1786,10 @@ export class SessionTools {
 
 	/** Digest of the base prompt the current branch's newest reply with provider output was produced under. */
 	recordedPromptDigest(): string | undefined {
-		const branch = this.#host.sessionManager.getBranchView();
-		const scan = this.#recordedDigestScan;
-		if (scan?.branch === branch) {
-			for (let index = scan.scanned; index < branch.length; index++) {
-				const digest = promptDigestOfEntry(branch[index]);
-				if (digest !== null) scan.digest = digest;
-			}
-			scan.scanned = branch.length;
-			return scan.digest;
-		}
-		let digest: string | undefined;
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const found = promptDigestOfEntry(branch[index]);
-			if (found !== null) {
-				digest = found;
-				break;
-			}
-		}
-		this.#recordedDigestScan = { branch, scanned: branch.length, digest };
-		return digest;
+		const entry = this.#host.sessionManager.getLatestBranchMatching(
+			metadata => metadata.type === "custom" && metadata.customType === SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE,
+		);
+		return entry ? (promptDigestOfEntry(entry) ?? undefined) : undefined;
 	}
 
 	/** Digest of the agent's current base prompt, comparable with the digests recorded on the branch. */
@@ -1803,7 +1850,6 @@ export class SessionTools {
 	/** Drops retained transcript references when the session is disposed. */
 	releaseRestoredTranscript(): void {
 		this.#restoredTranscript = undefined;
-		this.#recordedDigestScan = undefined;
 	}
 
 	/**
@@ -2397,10 +2443,10 @@ export class SessionTools {
 	/** Selects enabled tools, ignoring names absent from the registry. */
 	setActiveToolsByName(toolNames: string[]): Promise<void> {
 		return this.runToolRegistryMutation(async () => {
-			await this.#applyToolPresentation(
-				normalizeToolNames(toolNames),
-				this.#toolCommands?.mountedNames ?? new Set(),
-			);
+			const normalized = normalizeToolNames(toolNames);
+			// A runtime caller naming `write` grants it: the agent:// reply transport upgrades to filesystem access.
+			if (normalized.includes("write") && this.#isAgentOnlyWrite?.() === true) this.#clearAgentOnlyWrite?.();
+			await this.#applyToolPresentation(normalized, this.#toolCommands?.mountedNames ?? new Set());
 		});
 	}
 
@@ -2651,6 +2697,7 @@ export class SessionTools {
 				this.#pendingToolRosterDeltaAfterBase = undefined;
 				this.#promptModelKey = this.#currentPromptModelKey();
 				this.#promptInlineDescriptors = this.#currentInlineDescriptors();
+				this.#promptNormalProseSpacing = needsNormalProseSpacing(this.#host.agent.state.model);
 				this.#promptTemplate = this.#currentPromptTemplate();
 				this.#lastAppliedToolSignature = signature;
 				this.#recordPromptRoster(activeToolNames);
@@ -2698,61 +2745,94 @@ export class SessionTools {
 		};
 	}
 
+	/** Indexed backends skip archive payloads; older backends retain the same branch semantics. */
+	#latestConversationContext(
+		manager: SessionManager,
+		customType: string,
+		matches: (details: Record<string, unknown>) => boolean,
+	): SessionEntry | undefined {
+		const indexed = manager as SessionManager & {
+			iterateBranchMatchingNewestFirst?: (
+				predicate: (metadata: { type: SessionEntry["type"]; customType?: string }) => boolean,
+			) => Iterable<SessionEntry>;
+		};
+		const entries = indexed.iterateBranchMatchingNewestFirst
+			? indexed.iterateBranchMatchingNewestFirst(
+					metadata =>
+						metadata.type === "reset_boundary" ||
+						(metadata.type === "custom_message" &&
+							(metadata.customType === undefined || metadata.customType === customType)),
+				)
+			: manager.getBranch().toReversed();
+		for (const entry of entries) {
+			if (entry.type === "reset_boundary") break;
+			if (
+				entry.type === "custom_message" &&
+				entry.customType === customType &&
+				isRecord(entry.details) &&
+				matches(entry.details)
+			)
+				return entry;
+		}
+		return undefined;
+	}
+
 	/** Stages memory prompt injection; the owning turn commits it together with extension policy. */
 	async buildSystemPromptForAgentStart(
 		promptText: string,
 		isCurrent: () => boolean,
 		signal?: AbortSignal,
 	): Promise<SystemPromptPreparation> {
+		const cwd = this.#host.sessionManager.getCwd();
+		const startup = this.#getStartupContext?.();
+		const startupDelivered =
+			startup &&
+			this.#latestConversationContext(this.#host.sessionManager, "startup-context", details => details.cwd === cwd);
+		const startupContext = startup && !startupDelivered ? { content: startup, details: { cwd } } : undefined;
 		const backend = await resolveMemoryBackend(this.#host.settings);
-		if (!isCurrent() || !backend.beforeAgentStartPrompt) return { systemPrompt: this.#baseSystemPrompt };
+		if (!isCurrent() || !this.#host.memoryBackendSession().memoryEnabled)
+			return { startupContext, systemPrompt: this.#baseSystemPrompt };
 
 		try {
-			const memory = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText, signal);
-			if (!isCurrent() || !memory) return { systemPrompt: this.#baseSystemPrompt };
-			const injected = memory.context;
-			if (!injected) {
-				return {
-					systemPrompt: this.#baseSystemPrompt,
-					memoryNotice: memory.notice,
-					commit: () => isCurrent() && memory.commit(),
-				};
-			}
-
-			let refreshed: SystemPromptPreparation | undefined;
-			try {
-				refreshed = await this.runToolRegistryMutation(() => this.#prepareBaseSystemPrompt(isCurrent));
-			} catch (refreshErr) {
-				logger.debug("Memory backend prompt refresh after beforeAgentStartPrompt failed", {
-					backend: backend.id,
-					error: String(refreshErr),
-				});
-			}
-			if (!isCurrent()) return { systemPrompt: this.#baseSystemPrompt };
-
-			const preparedBase = refreshed?.systemPrompt ?? this.#baseSystemPrompt;
-			const stablePrompt = [...preparedBase, injected];
+			const memory = await backend.beforeAgentStartPrompt?.(this.#host.memoryBackendSession(), promptText, signal);
+			if (!isCurrent()) return { startupContext, systemPrompt: this.#baseSystemPrompt };
+			const owner = this.#host.memoryBackendSession();
+			const cwd = owner.sessionManager.getCwd();
+			const scope = backend.conversationScope?.(owner);
+			const delivered = this.#latestConversationContext(
+				owner.sessionManager,
+				"memory-context",
+				details => details.backend === backend.id && details.cwd === cwd && details.scope === scope,
+			);
+			const newRecall =
+				memory?.context &&
+				(delivered?.type !== "custom_message" ||
+					!delivered.details ||
+					typeof delivered.details !== "object" ||
+					!("recall" in delivered.details) ||
+					delivered.details.recall !== memory.context);
+			const context = delivered
+				? newRecall
+					? memory?.context
+					: undefined
+				: backend.buildConversationContext
+					? await backend.buildConversationContext(owner, memory?.context, this.#memoryAgentDir)
+					: memory?.context;
 			return {
-				systemPrompt: stablePrompt,
-				memoryNotice: memory.notice,
-				commit: () => {
-					if (!isCurrent() || !memory.commit()) return false;
-					refreshed?.commit?.();
-					// A handler may have refreshed tools or policy. Promote the recall onto
-					// that winning base, never replace it with the preparation's snapshot.
-					const currentBase = this.#baseSystemPrompt;
-					this.#host.captureMemoryPromotionSnapshot(currentBase);
-					this.#baseSystemPrompt = currentBase === preparedBase ? stablePrompt : [...currentBase, injected];
-					this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
-					return true;
-				},
+				startupContext,
+				systemPrompt: this.#baseSystemPrompt,
+				memoryContext: context
+					? { content: context, details: { backend: backend.id, cwd, scope, recall: memory?.context } }
+					: undefined,
+				memoryNotice: memory?.notice,
+				commit: () => isCurrent() && (memory?.commit() ?? true),
 			};
 		} catch (err) {
 			logger.debug("Memory backend beforeAgentStartPrompt failed", {
 				backend: backend.id,
 				error: String(err),
 			});
-			return { systemPrompt: this.#baseSystemPrompt };
+			return { startupContext, systemPrompt: this.#baseSystemPrompt };
 		}
 	}
 

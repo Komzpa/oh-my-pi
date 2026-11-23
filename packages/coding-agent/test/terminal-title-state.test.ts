@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
+import * as fs from "node:fs";
 import * as os from "node:os";
+import * as path from "node:path";
 import { DEFAULT_SPINNER_INTERVAL_MS } from "@oh-my-pi/pi-tui/spinner-clock";
 import {
+	buildSessionTerminalLabel,
 	buildTerminalTitleWithState,
 	disposeTerminalTitleState,
 	setTerminalTitle,
@@ -12,7 +15,11 @@ import {
 	setTerminalTitleSpinnerInterval,
 	setTerminalTitleSpinnerStyle,
 	setTerminalTitleState,
+	setTerminalTitleTaskNow,
 } from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+import type { VcsRepo } from "@oh-my-pi/pi-natives";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import { mockWindowsConsoleTitle, type WindowsConsoleTitleMock } from "./terminal-title-test-utils";
 
@@ -96,6 +103,342 @@ describe("buildTerminalTitleWithState", () => {
 	});
 });
 
+/**
+ * Make `project` look like a repository root to the shared VCS API, without
+ * spawning Git: lookups from the project or anything below it report that root.
+ */
+function stubProjectRepo(project: string): { mockRestore(): void } {
+	const roots = [project, fs.realpathSync(project)];
+	return spyOn(vcs, "repo").mockImplementation((dir: string) => {
+		const root = roots.find(candidate => dir === candidate || dir.startsWith(`${candidate}${path.sep}`));
+		return root === undefined ? null : ({ root: () => root } as unknown as VcsRepo);
+	});
+}
+
+describe("session label carries the project", () => {
+	let scratchDirs: string[] = [];
+	let repoStubs: Array<{ mockRestore(): void }> = [];
+
+	afterEach(() => {
+		for (const stub of repoStubs) stub.mockRestore();
+		repoStubs = [];
+		for (const dir of scratchDirs) fs.rmSync(dir, { recursive: true, force: true });
+		scratchDirs = [];
+	});
+
+	function makeProject(projectName: string): string {
+		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
+		scratchDirs.push(scratch);
+		const project = path.join(scratch, projectName);
+		fs.mkdirSync(project, { recursive: true });
+		repoStubs.push(stubProjectRepo(project));
+		return project;
+	}
+
+	function makePlainDir(dirName: string): string {
+		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
+		scratchDirs.push(scratch);
+		const dir = path.join(scratch, dirName);
+		fs.mkdirSync(dir, { recursive: true });
+		return dir;
+	}
+
+	it("puts the project first in the label", () => {
+		const project = makeProject("demo-repo");
+		expect(buildSessionTerminalLabel("Fix the build", project)).toBe("demo-repo · Fix the build");
+		expect(buildTerminalTitleWithState(buildSessionTerminalLabel("Fix the build", project), "idle", 0, true)).toBe(
+			`${BRAND} > demo-repo · Fix the build`,
+		);
+	});
+
+	it("keeps the project inside a 25-character truncation", () => {
+		const project = makeProject("demo-repo");
+		const label = buildSessionTerminalLabel("Investigate the flaky upstream job", project);
+		expect(label!.slice(0, 25).startsWith("demo-repo")).toBe(true);
+	});
+
+	it("keeps the task half at about forty characters", () => {
+		const project = makeProject("demo-repo");
+		const label = buildSessionTerminalLabel("a".repeat(60), project);
+		expect(label?.startsWith("demo-repo · ")).toBe(true);
+		expect(label?.endsWith("…")).toBe(true);
+		expect(label!.slice("demo-repo · ".length).length).toBeLessThanOrEqual(40);
+	});
+
+	it("uses the session name alone when there is no cwd", () => {
+		expect(buildSessionTerminalLabel("my-session", undefined)).toBe("my-session");
+	});
+
+	it("falls back to the directory name when there is no session name", () => {
+		// The VCS lookup is stubbed to "no repository": a scratch dir under /tmp may
+		// have its own `.git` uphill on some machines. The cwd stays real.
+		const repoSpy = spyOn(vcs, "repo").mockReturnValue(null);
+		try {
+			expect(buildSessionTerminalLabel(undefined, makePlainDir("lonely-dir"))).toBe("lonely-dir");
+		} finally {
+			repoSpy.mockRestore();
+		}
+	});
+
+	it("resolves the project from a subdirectory of the repo root", () => {
+		const project = makeProject("demo-repo");
+		const nested = path.join(project, "sub", "dir");
+		fs.mkdirSync(nested, { recursive: true });
+		expect(buildSessionTerminalLabel("Deep fix", nested)).toBe("demo-repo · Deep fix");
+	});
+
+	it("takes the project from whatever root the shared VCS API reports (Jujutsu included)", () => {
+		const plain = makePlainDir("nested-cwd");
+		const repoSpy = spyOn(vcs, "repo").mockReturnValue({ root: () => "/work/jj-project" } as unknown as VcsRepo);
+		try {
+			expect(buildSessionTerminalLabel("Deep fix", plain)).toBe("jj-project · Deep fix");
+		} finally {
+			repoSpy.mockRestore();
+		}
+	});
+
+	it("resolves the project through a symlinked cwd", () => {
+		const project = makeProject("demo-repo");
+		const link = path.join(path.dirname(project), "linked-dir");
+		fs.symlinkSync(project, link);
+		expect(buildSessionTerminalLabel("Deep fix", link)).toBe("demo-repo · Deep fix");
+	});
+
+	it("uses the discovered project even when the cwd does not exist", () => {
+		const project = makeProject("demo-repo");
+		expect(buildSessionTerminalLabel("Fix", path.join(project, "never-created"))).toBe("demo-repo · Fix");
+	});
+
+	it("revalidates the project when a nearer repository appears or disappears", () => {
+		const cwd = makePlainDir("new");
+		let root: string | undefined = "/work/outer";
+		const repoSpy = spyOn(vcs, "repo").mockImplementation(() =>
+			root ? ({ root: () => root } as unknown as VcsRepo) : null,
+		);
+		try {
+			expect(buildSessionTerminalLabel("Fix", cwd)).toBe("outer · Fix");
+			root = cwd;
+			expect(buildSessionTerminalLabel("Fix", cwd)).toBe("new · Fix");
+			root = undefined;
+			expect(buildSessionTerminalLabel("Fix", cwd)).toBe("new · Fix");
+			root = "/work/restored";
+			expect(buildSessionTerminalLabel("Fix", cwd)).toBe("restored · Fix");
+		} finally {
+			repoSpy.mockRestore();
+		}
+	});
+
+	it("uses only the basename for a remote cwd, even one that exists locally", () => {
+		// A collab guest echoing the host's cwd must not walk the local filesystem:
+		// here the "remote" path is a real local repo, and still only its last
+		// segment is used, not the repo root above it.
+		const project = makeProject("demo-repo");
+		const nested = path.join(project, "sub");
+		fs.mkdirSync(nested);
+		expect(buildSessionTerminalLabel("Fix thing", nested, undefined, true)).toBe("sub · Fix thing");
+	});
+
+	it("parses a Windows host cwd on any guest platform", () => {
+		expect(buildSessionTerminalLabel("Fix thing", "C:\\work\\repo", undefined, true)).toBe("repo · Fix thing");
+		expect(buildSessionTerminalLabel(undefined, "C:\\work\\repo\\", undefined, true)).toBe("repo");
+		expect(buildSessionTerminalLabel("Fix thing", "/home/host/my-tool", undefined, true)).toBe("my-tool · Fix thing");
+	});
+
+	it("never truncates the project, even when the session name is exactly the project", () => {
+		const longName = "a-very-long-repository-name-that-exceeds-forty-columns-by-far";
+		const project = makeProject(longName);
+		expect(buildSessionTerminalLabel(longName, project)).toBe(longName);
+		expect(buildSessionTerminalLabel(`${longName} · ${"x".repeat(60)}`, project)).toBe(
+			`${longName} · ${"x".repeat(39)}…`,
+		);
+	});
+
+	it("caps a de-duplicated overlong task by display width", () => {
+		const project = makeProject("demo-repo");
+		const label = buildSessionTerminalLabel(`demo-repo · ${"漢".repeat(40)}`, project)!;
+		expect(label.startsWith("demo-repo · ")).toBe(true);
+		expect(Bun.stringWidth(label.slice("demo-repo · ".length))).toBeLessThanOrEqual(40);
+	});
+
+	it("falls back to the directory name outside a repo", () => {
+		// Same stub as above: pin the true no-repo branch.
+		const repoSpy = spyOn(vcs, "repo").mockReturnValue(null);
+		try {
+			expect(buildSessionTerminalLabel("Fix thing", makePlainDir("lonely"))).toBe("lonely · Fix thing");
+		} finally {
+			repoSpy.mockRestore();
+		}
+	});
+
+	it("keeps the project across a rename", () => {
+		const project = makeProject("demo-repo");
+		expect(buildSessionTerminalLabel("Topic A", project)).toBe("demo-repo · Topic A");
+		expect(buildSessionTerminalLabel("Topic B", project)).toBe("demo-repo · Topic B");
+	});
+
+	it("shows the in-progress todo row as the task half", () => {
+		const project = makeProject("demo-repo");
+		expect(buildSessionTerminalLabel("Topic A", project, "Collect statistics")).toBe(
+			"demo-repo · Collect statistics",
+		);
+	});
+
+	it("does not duplicate the project when the session name already carries it", () => {
+		const project = makeProject("demo-repo");
+		expect(buildSessionTerminalLabel("demo-repo · Something", project)).toBe("demo-repo · Something");
+		expect(buildSessionTerminalLabel("demo-repo", project)).toBe("demo-repo");
+	});
+});
+
+describe("label tracks what the session is doing now", () => {
+	let scratchDirs: string[] = [];
+	let writes: string[] = [];
+	let repoStubs: Array<{ mockRestore(): void }> = [];
+	let stdoutSpy: { mockRestore(): void } | undefined;
+	let prevHeadless = false;
+	let ttyDescriptor: PropertyDescriptor | undefined;
+
+	function makeProject(projectName: string): string {
+		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-"));
+		scratchDirs.push(scratch);
+		const project = path.join(scratch, projectName);
+		fs.mkdirSync(project, { recursive: true });
+		repoStubs.push(stubProjectRepo(project));
+		return project;
+	}
+
+	function lastTitle(): string | undefined {
+		vi.advanceTimersByTime(1000);
+		return writes
+			.map(payload => /\x1b\]0;([\s\S]*?)\x07/.exec(payload)?.[1])
+			.filter((t): t is string => t !== undefined)
+			.at(-1);
+	}
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		prevHeadless = setTerminalHeadless(false);
+		ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+		writes = [];
+		stdoutSpy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+			writes.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk as Uint8Array));
+			return true;
+		});
+		initTerminalTitleState();
+		setTerminalTitleSpinnerStyle("braille");
+		setTerminalTitleState("idle");
+	});
+
+	afterEach(() => {
+		setTerminalTitleTaskNow(undefined);
+		disposeTerminalTitleState();
+		vi.useRealTimers();
+		stdoutSpy?.mockRestore();
+		stdoutSpy = undefined;
+		for (const stub of repoStubs) stub.mockRestore();
+		repoStubs = [];
+		if (ttyDescriptor) Object.defineProperty(process.stdout, "isTTY", ttyDescriptor);
+		else Reflect.deleteProperty(process.stdout, "isTTY");
+		setTerminalHeadless(prevHeadless);
+		for (const dir of scratchDirs) fs.rmSync(dir, { recursive: true, force: true });
+		scratchDirs = [];
+	});
+
+	it("moves the OSC title to the in-progress todo row and back", () => {
+		const project = makeProject("demo-repo");
+		setSessionTerminalTitle("Topic A", project);
+		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Topic A`);
+		setTerminalTitleTaskNow("Collect statistics");
+		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Collect statistics`);
+		setTerminalTitleTaskNow(undefined);
+		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Topic A`);
+	});
+
+	it("refreshes the OSC project after native repository discovery changes at the same cwd", () => {
+		const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tabtitle-native-"));
+		scratchDirs.push(scratch);
+		const outer = path.join(scratch, "outer");
+		const inner = path.join(outer, "new");
+		fs.mkdirSync(inner, { recursive: true });
+		const initialize = (dir: string): void => {
+			fs.mkdirSync(path.join(dir, ".git", "objects"), { recursive: true });
+			fs.mkdirSync(path.join(dir, ".git", "refs", "heads"), { recursive: true });
+			fs.writeFileSync(path.join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+			fs.writeFileSync(path.join(dir, ".git", "config"), "[core]\nrepositoryformatversion = 0\nbare = false\n");
+		};
+		// Own the parent repo as well: TMPDIR may itself be inside a checkout.
+		initialize(scratch);
+		initialize(outer);
+		setSessionTerminalTitle("Fix", inner);
+		expect(lastTitle()).toBe(`${BRAND} > outer · Fix`);
+		initialize(inner);
+		setTerminalTitleTaskNow("New task");
+		expect(lastTitle()).toBe(`${BRAND} > new · New task`);
+		fs.rmSync(path.join(inner, ".git"), { recursive: true });
+		setTerminalTitleTaskNow(undefined);
+		expect(lastTitle()).toBe(`${BRAND} > outer · Fix`);
+		fs.rmSync(path.join(outer, ".git"), { recursive: true });
+		setSessionTerminalTitle("Plain", inner);
+		expect(lastTitle()).toBe(`${BRAND} > ${path.basename(scratch)} · Plain`);
+	});
+
+	it("composes the task half against the focused session, then returns to the main one", () => {
+		const main = makeProject("main-repo");
+		const worker = makeProject("worker-tree");
+		setSessionTerminalTitle("Main topic", main);
+		setTerminalTitleTaskNow("Worker step", { sessionName: "Worker topic", cwd: worker });
+		expect(lastTitle()).toBe(`${BRAND} > worker-tree · Worker step`);
+		// Clearing the focused session's task falls back to that session, not the main one.
+		setTerminalTitleTaskNow(undefined, { sessionName: "Worker topic", cwd: worker });
+		expect(lastTitle()).toBe(`${BRAND} > worker-tree · Worker topic`);
+		setTerminalTitleTaskNow("Main step", { sessionName: "Main topic", cwd: main });
+		expect(lastTitle()).toBe(`${BRAND} > main-repo · Main step`);
+	});
+
+	it("keeps startup todos pending until the terminal is claimed and the project is supplied", () => {
+		const project = makeProject("startup-repo");
+		setSessionTerminalTitle(undefined);
+		disposeTerminalTitleState();
+		writes = [];
+		setTerminalTitleTaskNow("Initial title task");
+		expect(lastTitle()).toBeUndefined();
+		initTerminalTitleState();
+		setTerminalTitleState("idle");
+		expect(lastTitle()?.includes("Initial title task") ?? false).toBe(false);
+		setSessionTerminalTitle("Session card", project);
+		expect(lastTitle()).toBe(`${BRAND} > startup-repo · Initial title task`);
+		setTerminalTitleTaskNow(undefined);
+	});
+
+	it("keeps the project in the OSC title when the session is renamed", () => {
+		const project = makeProject("demo-repo");
+		setSessionTerminalTitle("Topic A", project);
+		setSessionTerminalTitle("Topic B", project);
+		expect(lastTitle()).toBe(`${BRAND} > demo-repo · Topic B`);
+	});
+
+	it("a remote collab cwd keeps its host-side name across task updates", () => {
+		setSessionTerminalTitle("Topic A", "C:\\work\\host-repo", { remoteCwd: true });
+		expect(lastTitle()).toBe(`${BRAND} > host-repo · Topic A`);
+		setTerminalTitleTaskNow("Do it");
+		expect(lastTitle()).toBe(`${BRAND} > host-repo · Do it`);
+		setTerminalTitleTaskNow(undefined);
+		setSessionTerminalTitle(undefined);
+	});
+
+	it("carries the composed label into the native TSP title", () => {
+		const project = makeProject("demo-repo");
+		try {
+			setNativeRendering(true);
+			setSessionTerminalTitle("Topic A", project);
+			expect(lastTitle()).toBe("demo-repo · Topic A");
+		} finally {
+			setNativeRendering(false);
+		}
+	});
+});
+
 // Regression coverage for the shutdown-leak bug (PR #4451): the run-state
 // `working` spinner arms a periodic `setInterval` that, on every tick, re-emits
 // the terminal title as an OSC-0 write (`ESC]0;<title>BEL`). If that interval is
@@ -129,6 +472,9 @@ function resetObserved(writes: string[], windowsTitleMock: WindowsConsoleTitleMo
 }
 
 describe("disposeTerminalTitleState", () => {
+	function advanceTitleTime(ms: number): void {
+		vi.advanceTimersByTime(ms);
+	}
 	let writes: string[] = [];
 	let stdoutSpy: { mockRestore(): void } | undefined;
 	let prevHeadless = false;
@@ -163,6 +509,8 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleSpinnerInterval(DEFAULT_SPINNER_INTERVAL_MS);
 		setSessionTerminalTitle("my-project");
 		setTerminalTitleState("idle");
+		advanceTitleTime(1000);
+		advanceTitleTime(1000);
 		resetObserved(writes, windowsTitleMock);
 	});
 
@@ -196,7 +544,7 @@ describe("disposeTerminalTitleState", () => {
 		// timer was actually running, so the post-dispose silence is meaningful and
 		// not a headless/TTY misconfiguration masking all writes).
 		resetObserved(writes, windowsTitleMock);
-		vi.advanceTimersByTime(400);
+		advanceTitleTime(1000);
 		const ticksWhileLive = observedTitles(writes, windowsTitleMock).length;
 		expect(ticksWhileLive).toBeGreaterThan(0);
 
@@ -205,7 +553,7 @@ describe("disposeTerminalTitleState", () => {
 
 		// After dispose: advance far past many tick periods. No tick may fire.
 		resetObserved(writes, windowsTitleMock);
-		vi.advanceTimersByTime(4000);
+		advanceTitleTime(4000);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
 	});
 
@@ -220,6 +568,7 @@ describe("disposeTerminalTitleState", () => {
 		// is the latch and not a headless/TTY misconfiguration.
 		resetObserved(writes, windowsTitleMock);
 		setTerminalTitle("live write");
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock).length).toBeGreaterThan(0);
 
 		disposeTerminalTitleState();
@@ -232,6 +581,7 @@ describe("disposeTerminalTitleState", () => {
 		initTerminalTitleState();
 		resetObserved(writes, windowsTitleMock);
 		setTerminalTitle("owned again");
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock).length).toBeGreaterThan(0);
 	});
 
@@ -255,7 +605,7 @@ describe("disposeTerminalTitleState", () => {
 		// later dispose reaches.
 		expect(vi.getTimerCount()).toBe(0);
 
-		vi.advanceTimersByTime(4000);
+		advanceTitleTime(4000);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
 	});
 
@@ -302,7 +652,7 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleState("working");
 		resetObserved(writes, windowsTitleMock);
 
-		vi.advanceTimersByTime(400);
+		advanceTitleTime(1000);
 
 		const titles = observedTitles(writes, windowsTitleMock);
 		expect(titles.length).toBeGreaterThan(0);
@@ -319,7 +669,7 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleState("working");
 		resetObserved(writes, windowsTitleMock);
 
-		vi.advanceTimersByTime(DEFAULT_SPINNER_INTERVAL_MS * 2);
+		advanceTitleTime(1000);
 
 		const titles = observedTitles(writes, windowsTitleMock);
 		expect(titles.length).toBeGreaterThan(0);
@@ -331,7 +681,7 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleState("working");
 		resetObserved(writes, windowsTitleMock);
 
-		vi.advanceTimersByTime(400);
+		advanceTitleTime(1000);
 
 		const titles = observedTitles(writes, windowsTitleMock);
 		expect(titles.length).toBeGreaterThan(0);
@@ -358,21 +708,63 @@ describe("disposeTerminalTitleState", () => {
 
 		// ...and the spinner is genuinely ticking again, not frozen on one frame.
 		resetObserved(writes, windowsTitleMock);
-		vi.advanceTimersByTime(400);
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock).length).toBeGreaterThan(0);
 	});
 
+	it("coalesces changing titles to the latest text at one write per second", () => {
+		setTerminalTitle("first");
+		resetObserved(writes, windowsTitleMock);
+		for (let i = 0; i < 100; i++) setTerminalTitle(`update ${i}`);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+		advanceTitleTime(999);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+		advanceTitleTime(1);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual(["update 99"]);
+		resetObserved(writes, windowsTitleMock);
+		for (let i = 0; i < 100; i++) setTerminalTitle("update 99");
+		advanceTitleTime(2000);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+		// Returning to the displayed title must cancel an obsolete pending update.
+		setTerminalTitle("temporary");
+		setTerminalTitle("pending");
+		setTerminalTitle("temporary");
+		resetObserved(writes, windowsTitleMock);
+		advanceTitleTime(1000);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+	});
+
+	it("does not restore an obsolete queued title after the event loop stalls", () => {
+		let now = Date.now();
+		const clock = spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			setTerminalTitle("first");
+			setTerminalTitle("obsolete");
+			// Move wall time without dispatching the already queued timer.
+			now += 1500;
+			setTerminalTitle("latest");
+			expect(observedTitles(writes, windowsTitleMock).at(-1)).toBe("latest");
+			resetObserved(writes, windowsTitleMock);
+			now += 2000;
+			advanceTitleTime(2000);
+			expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
 	it("ticks at the configured interval, re-arming a live spinner on change", () => {
-		setTerminalTitleState("working");
 		setTerminalTitleSpinnerInterval(1000);
+		setTerminalTitleState("working");
+		advanceTitleTime(1000);
 		resetObserved(writes, windowsTitleMock);
 
 		// Nothing before the new period elapses, even though the default period has passed several times.
-		vi.advanceTimersByTime(999);
+		advanceTitleTime(999);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
-		vi.advanceTimersByTime(1);
+		advanceTitleTime(1);
 		expect(observedTitles(writes, windowsTitleMock)).toHaveLength(1);
-		vi.advanceTimersByTime(1000);
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock)).toHaveLength(2);
 	});
 
@@ -380,15 +772,17 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleSpinnerInterval(0);
 		resetObserved(writes, windowsTitleMock);
 		setTerminalTitleState("working");
+		advanceTitleTime(1000);
 
 		expect(observedTitles(writes, windowsTitleMock)).toEqual(["π : my-project"]);
 		expect(vi.getTimerCount()).toBe(0);
 		resetObserved(writes, windowsTitleMock);
-		vi.advanceTimersByTime(DEFAULT_SPINNER_INTERVAL_MS * 10);
+		advanceTitleTime(DEFAULT_SPINNER_INTERVAL_MS * 10);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
 
 		// Other states are unaffected by the static spinner.
 		setTerminalTitleState("idle");
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual(["π > my-project"]);
 	});
 
@@ -411,6 +805,7 @@ describe("disposeTerminalTitleState", () => {
 
 			initTerminalTitleState();
 			setSessionTerminalTitle("running-session");
+			advanceTitleTime(1000);
 			expect(native.titles).toContain("π > running-session");
 
 			resetObserved(writes, native);

@@ -1,0 +1,234 @@
+{
+  "before-spawn": {
+    "pid": "2221077",
+    "maxIncludingBetweenTurnMs": {
+      "time": 1794086367021,
+      "gap": 9819.658883999997,
+      "rchar": 2984034901
+    },
+    "toolDurations": [
+      {
+        "tool": "task",
+        "start": 1794086322956,
+        "end": 1794086323091,
+        "wallMs": 135
+      },
+      {
+        "tool": "read",
+        "start": 1794086328562,
+        "end": 1794086337160,
+        "wallMs": 8598
+      },
+      {
+        "tool": "read",
+        "start": 1794086342454,
+        "end": 1794086351896,
+        "wallMs": 9442
+      },
+      {
+        "tool": "grep",
+        "start": 1794086357219,
+        "end": 1794086367108,
+        "wallMs": 9889
+      }
+    ],
+    "runtimeRoutes": [
+      {
+        "timestamp": "2026-11-08T01:18:42.520+04:00",
+        "pid": 2221077,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e0-b92b-765f-b3b2-4da148b2dfdb",
+        "route": "entered",
+        "model": "claude-opus-5-5"
+      },
+      {
+        "timestamp": "2026-11-08T01:18:42.522+04:00",
+        "pid": 2221077,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e0-b92b-765f-b3b2-4da148b2dfdb",
+        "route": "bottom-checkCompaction",
+        "model": "claude-opus-5-5"
+      },
+      {
+        "timestamp": "2026-11-08T01:18:44.745+04:00",
+        "pid": 2221077,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e0-b92b-765f-b3b2-4da148b2dfdb",
+        "route": "entered",
+        "model": "claude-opus-5-5"
+      },
+      {
+        "timestamp": "2026-11-08T01:18:44.746+04:00",
+        "pid": 2221077,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e0-b92b-765f-b3b2-4da148b2dfdb",
+        "route": "bottom-checkCompaction",
+        "model": "claude-opus-5-5"
+      },
+      {
+        "timestamp": "2026-11-08T01:18:44.818+04:00",
+        "pid": 2221077,
+        "message": "subagent launch timing",
+        "id": "CriticPlan-30",
+        "preRunMs": 15
+      },
+      {
+        "timestamp": "2026-11-08T01:18:46.010+04:00",
+        "pid": 2221077,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e0-c6ef-7261-a548-d244d93684e8",
+        "route": "entered",
+        "model": "offline-worker"
+      },
+      {
+        "timestamp": "2026-11-08T01:18:46.010+04:00",
+        "pid": 2221077,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e0-c6ef-7261-a548-d244d93684e8",
+        "route": "bottom-checkCompaction",
+        "model": "offline-worker"
+      },
+      {
+        "timestamp": "2026-11-08T01:18:48.122+04:00",
+        "pid": 2221077,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e0-c6ef-7261-a548-d244d93684e8",
+        "route": "entered",
+        "model": "offline-worker"
+      },
+      {
+        "timestamp": "2026-11-08T01:18:48.122+04:00",
+        "pid": 2221077,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e0-c6ef-7261-a548-d244d93684e8",
+        "route": "bottom-checkCompaction",
+        "model": "offline-worker"
+      },
+      {
+        "timestamp": "2026-11-08T01:18:48.127+04:00",
+        "pid": 2221077,
+        "message": "subagent launch timing",
+        "sessionId": "01a1921c-7697-72a8-b4a3-4efdbbf06221",
+        "id": "VerifyLevelledPowerOffline",
+        "preRunMs": 959
+      }
+    ],
+    "cpuProfile": "evidence/before-spawn/CPU.20261108.011932.2221077.0.001.cpuprofile"
+  },
+  "after-spawn": {
+    "pid": "2233915",
+    "maxIncludingBetweenTurnMs": {
+      "time": 1794086448824,
+      "gap": 430.96793199999956,
+      "rchar": 2089813
+    },
+    "toolDurations": [
+      {
+        "tool": "task",
+        "start": 1794086429038,
+        "end": 1794086429168,
+        "wallMs": 130
+      },
+      {
+        "tool": "read",
+        "start": 1794086434349,
+        "end": 1794086448474,
+        "wallMs": 14125
+      },
+      {
+        "tool": "read",
+        "start": 1794086455254,
+        "end": 1794086455292,
+        "wallMs": 38
+      },
+      {
+        "tool": "grep",
+        "start": 1794086465091,
+        "end": 1794086466571,
+        "wallMs": 1480
+      }
+    ],
+    "runtimeRoutes": [
+      {
+        "timestamp": "2026-11-08T01:20:28.453+04:00",
+        "pid": 2233915,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e2-56e9-73f4-9911-493da11d8142",
+        "route": "entered",
+        "model": "claude-opus-5-5"
+      },
+      {
+        "timestamp": "2026-11-08T01:20:28.456+04:00",
+        "pid": 2233915,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e2-56e9-73f4-9911-493da11d8142",
+        "route": "bottom-checkCompaction",
+        "model": "claude-opus-5-5"
+      },
+      {
+        "timestamp": "2026-11-08T01:20:30.691+04:00",
+        "pid": 2233915,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e2-56e9-73f4-9911-493da11d8142",
+        "route": "entered",
+        "model": "claude-opus-5-5"
+      },
+      {
+        "timestamp": "2026-11-08T01:20:30.692+04:00",
+        "pid": 2233915,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e2-56e9-73f4-9911-493da11d8142",
+        "route": "bottom-checkCompaction",
+        "model": "claude-opus-5-5"
+      },
+      {
+        "timestamp": "2026-11-08T01:20:30.768+04:00",
+        "pid": 2233915,
+        "message": "subagent launch timing",
+        "id": "CriticPlan-31",
+        "preRunMs": 15
+      },
+      {
+        "timestamp": "2026-11-08T01:20:31.623+04:00",
+        "pid": 2233915,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e2-6371-70ff-a7d7-95a507669c3f",
+        "route": "entered",
+        "model": "offline-worker"
+      },
+      {
+        "timestamp": "2026-11-08T01:20:31.624+04:00",
+        "pid": 2233915,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e2-6371-70ff-a7d7-95a507669c3f",
+        "route": "bottom-checkCompaction",
+        "model": "offline-worker"
+      },
+      {
+        "timestamp": "2026-11-08T01:20:33.736+04:00",
+        "pid": 2233915,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e2-6371-70ff-a7d7-95a507669c3f",
+        "route": "entered",
+        "model": "offline-worker"
+      },
+      {
+        "timestamp": "2026-11-08T01:20:33.737+04:00",
+        "pid": 2233915,
+        "message": "agent_end maintenance routing",
+        "sessionId": "01a1b7e2-6371-70ff-a7d7-95a507669c3f",
+        "route": "bottom-checkCompaction",
+        "model": "offline-worker"
+      },
+      {
+        "timestamp": "2026-11-08T01:20:33.741+04:00",
+        "pid": 2233915,
+        "message": "subagent launch timing",
+        "sessionId": "01a1921c-7697-72a8-b4a3-4efdbbf06221",
+        "id": "VerifyLevelledPowerOffline-2",
+        "preRunMs": 479
+      }
+    ],
+    "cpuProfile": "evidence/after-spawn/CPU.20261108.012115.2233915.0.001.cpuprofile"
+  }
+}

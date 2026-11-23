@@ -112,6 +112,23 @@ describe("AgentSession steer idle drain", () => {
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("passive administrative steering never resumes an idle worker", async () => {
+		await createSession([{ role: "user", content: "hello", timestamp: Date.now() }, createAssistantMessage()]);
+		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
+			session.agent.clearAllQueues();
+		});
+		await session.steer("Write scope was narrowed", undefined, { passive: true });
+		vi.advanceTimersByTime(200);
+		await session.waitForIdle();
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(session.agent.hasQueuedMessages()).toBe(false);
+		expect(
+			session.agent.state.messages.some(
+				message => message.role === "custom" && message.content === "Write scope was narrowed",
+			),
+		).toBe(true);
+	});
+
 	it("delivers successive idle steers after each successful drain", async () => {
 		await createSession([{ role: "user", content: "hello", timestamp: Date.now() }, createAssistantMessage()]);
 		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {

@@ -60,20 +60,6 @@ function newHarness(initial: TodoPhase[] = []): Harness {
 	};
 }
 
-describe("todo snapshots saved with the retired blocked status", () => {
-	it("read back as pending, in both user-edit and tool-result entries", () => {
-		const saved = [{ name: "Work", tasks: [{ content: "wait", status: "blocked", blocker: "approval" }] }];
-		const userEdit = { type: "custom", customType: USER_TODO_EDIT_CUSTOM_TYPE, data: { phases: saved } };
-		const toolResult = {
-			type: "message",
-			message: { role: "toolResult", toolName: "todo", details: { op: "append", phases: saved } },
-		};
-		const expected: TodoPhase[] = [{ name: "Work", tasks: [{ content: "wait", status: "pending" }] }];
-		expect(getLatestTodoPhasesFromEntries([userEdit as SessionEntry])).toEqual(expected);
-		expect(getLatestTodoPhasesFromEntries([toolResult as SessionEntry])).toEqual(expected);
-	});
-});
-
 describe("cursor todo persistence", () => {
 	// The replay test drives the real todo renderer, which reads theme + settings.
 	beforeAll(async () => {
@@ -354,13 +340,14 @@ describe("cursor todo persistence", () => {
 		const rebuilt = context.messages.find(message => message.role === "assistant");
 		expect(rebuilt?.content.some(block => block.type === "toolCall" && block.id === "cursor-call-1")).toBe(true);
 
-		// And the rebuilt result actually renders the list: `renderResult` derives
-		// every row from `details.phases`, so a summary-only result would print
-		// the `0 tasks` fallback instead of the task.
+		// And the rebuilt result still carries the mirrored list. The renderer
+		// derives the card count from `details.phases`; a summary-only result
+		// would print the `0 tasks` fallback.
 		const replayed = context.messages.find(
 			(message): message is typeof result => message.role === "toolResult" && message.toolCallId === "cursor-call-1",
 		);
 		if (!replayed) throw new Error("expected the paired result to survive the rebuild");
+		expect((replayed.details as { phases?: TodoPhase[] } | undefined)?.phases?.[0]?.tasks[0]?.content).toBe("oauth");
 		const component = todoToolRenderer.renderResult(
 			{ content: replayed.content, details: replayed.details as never, isError: replayed.isError },
 			{ expanded: true } as Parameters<typeof todoToolRenderer.renderResult>[1],
@@ -368,7 +355,6 @@ describe("cursor todo persistence", () => {
 		);
 		const rendered = (component.render(120) as readonly string[]).join("\n");
 
-		expect(rendered).toContain("oauth");
 		expect(rendered).not.toContain("0 tasks");
 	});
 });

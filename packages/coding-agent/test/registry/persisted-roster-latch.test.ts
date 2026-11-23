@@ -4,12 +4,16 @@ import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
+import * as sessionLoader from "@oh-my-pi/pi-coding-agent/session/session-loader";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
 
 /** Latch-cache bound enforced by `ensurePersistedRoster` (see MAX_PERSISTED_ROSTER_LATCHES). */
 const MAX_PERSISTED_ROSTER_LATCHES = 32;
+const MAX_PERSISTED_TERMINAL_SUBAGENTS_PER_ROOT = 128;
 
 function sessionHeader(id: string): string {
 	return JSON.stringify({
@@ -284,6 +288,44 @@ describe("persisted roster latch semantics", () => {
 		expect(countReaddirs(readdirs, scanDir(rootA))).toBe(2);
 	});
 
+	it("bounds terminal refs but restores an explicitly requested evicted child", async () => {
+		using tempDir = TempDir.createSync("@omp-roster-terminal-bound-");
+		const dir = tempDir.path();
+		const rootFile = path.join(dir, "main.jsonl");
+		const rootDir = scanDir(rootFile);
+		const childCount = MAX_PERSISTED_TERMINAL_SUBAGENTS_PER_ROOT + 12;
+		const childId = (index: number) => `Worker-${String(index).padStart(3, "0")}`;
+		await Bun.write(rootFile, `${sessionHeader("main")}\n`);
+		await Promise.all(
+			Array.from({ length: childCount }, (_, index) => {
+				const id = childId(index);
+				const childFile = path.join(rootDir, `${id}.jsonl`);
+				return Bun.write(childFile, `${sessionHeader(id)}\n${sessionInitRecord()}\n`);
+			}),
+		);
+		const registry = new AgentRegistry();
+
+		await ensurePersistedRoster(registry, rootFile);
+		const terminalRefs = () =>
+			registry
+				.list()
+				.filter(ref => ref.kind === "sub" && ref.status === "parked" && ref.sessionFile?.startsWith(`${rootDir}/`));
+		expect(terminalRefs()).toHaveLength(MAX_PERSISTED_TERMINAL_SUBAGENTS_PER_ROOT);
+		const evictedId = Array.from({ length: childCount }, (_, index) => childId(index)).find(
+			id => registry.get(id) === undefined,
+		);
+		expect(evictedId).toBeDefined();
+		if (!evictedId) throw new Error("Expected the terminal roster bound to evict a child ref");
+		expect(registry.get(evictedId)).toBeUndefined();
+
+		// This is the `write agent://<id>` path: the caller supplies the root and
+		// the requested recipient, so the persisted scanner keeps this old id
+		// resident long enough for the lifecycle manager to revive it.
+		await ensurePersistedRoster(registry, rootFile, evictedId);
+		expect(registry.get(evictedId)).toMatchObject({ id: evictedId, status: "parked" });
+		expect(terminalRefs()).toHaveLength(MAX_PERSISTED_TERMINAL_SUBAGENTS_PER_ROOT);
+	});
+
 	it("bounds remembered latches by evicting only settled ones", async () => {
 		using tempDir = TempDir.createSync("@omp-roster-latch-bound-");
 		const dir = tempDir.path();
@@ -488,3 +530,97 @@ describe("persisted roster latch semantics", () => {
 		expect(countReaddirs(readdirs, scanDir(rootA))).toBe(3);
 	}, 10_000);
 });
+
+it("captured workers use indexed Vibe ownership without streaming the root journal", async () => {
+	using tempDir = TempDir.createSync("@omp-roster-restart-index-");
+	const rootFile = path.join(tempDir.path(), "main.jsonl");
+	const workerFile = path.join(tempDir.path(), "main", "Worker.jsonl");
+	const vibeFile = path.join(tempDir.path(), "main", "Vibe.jsonl");
+	await Bun.write(rootFile, `${sessionHeader("main")}\n`);
+	for (const file of [workerFile, vibeFile])
+		await Bun.write(file, `${sessionHeader(path.basename(file))}\n${sessionInitRecord()}\n`);
+	const visit = sessionLoader.visitEntriesFromFileStream;
+	vi.spyOn(sessionLoader, "visitEntriesFromFileStream").mockImplementation((...args) => {
+		if (args[0] === rootFile) throw new Error("restart streamed the root journal");
+		return visit(...args);
+	});
+	const registry = new AgentRegistry();
+	expect(await ensurePersistedRoster(registry, rootFile, undefined, [workerFile, vibeFile], new Set(["Vibe"]))).toBe(
+		rootFile,
+	);
+	expect(registry.get("Worker")).toMatchObject({ sessionFile: workerFile, status: "parked" });
+	expect(registry.get("Vibe")).toBeUndefined();
+});
+
+it.each([false, true])(
+	"ordinary parallel launches preserve Vibe exclusion using the actual loaded root (stale ref: %s)",
+	async staleRef => {
+		using tempDir = TempDir.createSync("@omp-roster-live-index-");
+		const rootFile = path.join(tempDir.path(), "main.jsonl");
+		const otherFile = path.join(tempDir.path(), "other.jsonl");
+		const workerFile = path.join(tempDir.path(), "main", "Worker.jsonl");
+		const vibeFile = path.join(tempDir.path(), "main", "Vibe.jsonl");
+		const lifecycle = {
+			type: "custom",
+			customType: "vibe-session-lifecycle",
+			id: "spawn",
+			parentId: null,
+			timestamp: "2026-08-25T10:00:00.000Z",
+			data: {
+				version: 1,
+				action: "spawn",
+				id: "Vibe",
+				ownerId: "main",
+				parentSessionId: "main",
+				cli: "fast",
+				agent: "task",
+				childSessionFile: "Vibe.jsonl",
+				createdAt: 1,
+			},
+		};
+		// Ownership remains valid off the active branch; using only the current branch would expose Vibe as a task.
+		const current = {
+			type: "custom",
+			customType: "unrelated",
+			id: "current",
+			parentId: null,
+			timestamp: "2026-08-25T10:00:01.000Z",
+			data: "x".repeat(2 * 1024 * 1024),
+		};
+		await Bun.write(rootFile, `${sessionHeader("main")}\n${JSON.stringify(lifecycle)}\n${JSON.stringify(current)}\n`);
+		await Bun.write(otherFile, `${sessionHeader("other")}\n`);
+		for (const file of [workerFile, vibeFile])
+			await Bun.write(file, `${sessionHeader(path.basename(file))}\n${sessionInitRecord()}\n`);
+		const manager = await SessionManager.open(staleRef ? otherFile : rootFile);
+		const registry = new AgentRegistry();
+		registry.register({
+			id: "Main",
+			kind: "main",
+			displayName: "Main",
+			status: "running",
+			sessionFile: rootFile,
+			session: { sessionManager: manager } as unknown as AgentSession,
+		});
+		let rootReads = 0;
+		const visit = sessionLoader.visitEntriesFromFileStream;
+		vi.spyOn(sessionLoader, "visitEntriesFromFileStream").mockImplementation((...args) => {
+			if (args[0] === rootFile) {
+				rootReads++;
+				if (!staleRef) throw new Error("launch streamed the loaded root journal");
+			}
+			return visit(...args);
+		});
+		try {
+			expect(await Promise.all(Array.from({ length: 3 }, () => ensurePersistedRoster(registry, rootFile)))).toEqual([
+				rootFile,
+				rootFile,
+				rootFile,
+			]);
+			expect(registry.get("Worker")).toMatchObject({ sessionFile: workerFile, status: "parked" });
+			expect(registry.get("Vibe")).toBeUndefined();
+			expect(rootReads).toBe(staleRef ? 1 : 0);
+		} finally {
+			await manager.close();
+		}
+	},
+);

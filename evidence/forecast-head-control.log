@@ -1,0 +1,12 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/tui/test/forecast-base-control.test.ts:
+{"key":"11:12","finish":1794044909559.232,"note":"Current set: point 09:37 | raw model P80 09:48; calibration insufficient (0 origins, 0 sessions) | Throughput diagnostic: 0.88 rows/h (19 closures) | ETA fixed-path P95 (normal approximation): 2026-11-07T09:57:07.981Z | expected resource finish: 2026-11-07T09:33:47.439Z | scenario envelope: 2026-11-07T08:27:07.439Z..2026-11-07T11:07:07.439Z | issues: 3 | plan required: 1 repairs | resource assumptions: 2 | risk model unavailable"}
+(pass) DC 11:12 removes next-day floor [23.97ms]
+{"key":"18:11","finish":1794064448603.7517,"note":"Current set: point 15:06 | raw model P80 15:14; calibration insufficient (0 origins, 0 sessions) | Throughput diagnostic: 0.53 rows/h (12 closures) | ETA fixed-path P95 (normal approximation): 2026-11-07T15:24:39.267Z | expected resource finish: 2026-11-07T15:10:56.841Z | scenario envelope: 2026-11-07T14:35:32.170Z..2026-11-07T15:42:36.841Z | issues: 5 | resource assumptions: 2 | risk model unavailable"}
+(pass) DC 18:11 removes next-day floor [4.74ms]
+
+ 2 pass
+ 0 fail
+ 2 expect() calls
+Ran 2 tests across 1 file. [252.00ms]

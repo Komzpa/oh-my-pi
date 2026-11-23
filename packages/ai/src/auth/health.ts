@@ -1,6 +1,7 @@
 import { getProviderDefinition } from "../registry";
 import { providerPauseReason } from "../registry/oauth";
 import type { Provider } from "../types";
+import { is402BillingCapBody } from "../error/rate-limit";
 import { isWithinUsageReserve, resolveUsedFraction } from "../usage";
 import type {
 	CredentialRankingContext,
@@ -47,6 +48,7 @@ export interface CredentialHealthDeps {
 	refresher: OAuthRefresher;
 	overrides: KeyOverrides;
 	strategies: RankingStrategyResolver;
+	providerDepletion: Map<string, number | null>;
 }
 
 /** Model-level pool health and per-credential auth probes. */
@@ -438,5 +440,36 @@ export class CredentialHealth implements HealthApi {
 		}
 
 		return results;
+	}
+
+	isProviderDepleted(provider: Provider): boolean {
+		const resetAtMs = this.#deps.providerDepletion.get(provider);
+		if (resetAtMs === undefined) return false;
+		if (resetAtMs !== null && resetAtMs <= Date.now()) {
+			this.#deps.providerDepletion.delete(provider);
+			return false;
+		}
+		return true;
+	}
+
+	markProviderDepleted(provider: Provider, options?: { status?: number; message?: string; resetAtMs?: number }): void {
+		if (options?.status === 402) {
+			if (is402BillingCapBody(options.message)) this.#deps.providerDepletion.set(provider, null);
+			return;
+		}
+		const resetAtMs = options?.resetAtMs;
+		if (options?.status !== 429 || resetAtMs === undefined || !Number.isFinite(resetAtMs) || resetAtMs <= Date.now())
+			return;
+		const existing = this.#deps.providerDepletion.get(provider);
+		if (existing === null) return;
+		this.#deps.providerDepletion.set(provider, Math.max(existing ?? 0, resetAtMs));
+	}
+
+	markProviderSucceeded(provider: Provider): void {
+		this.#deps.providerDepletion.delete(provider);
+	}
+
+	resetProviderDepletion(provider: Provider): void {
+		this.#deps.providerDepletion.delete(provider);
 	}
 }
