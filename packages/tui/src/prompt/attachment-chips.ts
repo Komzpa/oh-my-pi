@@ -21,7 +21,6 @@ import { plainText } from "../native/spans";
 import type { DescribeContext, NativeNode } from "../native/node";
 import { wrapTmuxPassthroughIfNeeded } from "../tmux";
 import { convertImageToPng } from "../png-conversion";
-import { wrapTmuxPassthroughIfNeeded } from "../tmux";
 import { attachmentSgr } from "./composer-attachments";
 import { cachedImageDimensions, setCachedImageDimensions } from "./image-references";
 import { theme } from "../theme/theme";
