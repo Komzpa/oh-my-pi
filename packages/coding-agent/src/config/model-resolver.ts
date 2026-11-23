@@ -105,7 +105,7 @@ export function pickDefaultAvailableModel(
 	availableModels: Model<Api>[],
 	hasConcreteCredential?: (provider: string) => boolean,
 ): Model<Api> | undefined {
-	availableModels = filterBlacklistedModels(availableModels);
+	availableModels = withoutBlacklistedModels(availableModels);
 	const autoSelectable = availableModels.filter(model => providerEntry(model.provider)?.automaticDefault !== false);
 	const models =
 		hasConcreteCredential === undefined
@@ -399,6 +399,13 @@ function markAllowList(allowed: Model<Api>[]): Model<Api>[] {
 
 function isAllowList(models: readonly Model<Api>[]): boolean {
 	return (models as AllowList)[kAllowList] === true;
+}
+
+/** Drop blacklisted models; a filtered allow-list stays an allow-list. */
+function withoutBlacklistedModels<T extends Model<Api>>(models: T[]): T[] {
+	const filtered = filterBlacklistedModels(models);
+	if (filtered !== models && isAllowList(models)) markAllowList(filtered);
+	return filtered;
 }
 
 /** An explicit session or startup scope as an allow-list. */
@@ -1252,7 +1259,7 @@ export function parseModelPattern(
 ): ParsedModelResult {
 	const denied = modelSelectorBlacklistError(pattern, availableModels);
 	if (denied) throw new Error(denied);
-	availableModels = filterBlacklistedModels(availableModels);
+	availableModels = withoutBlacklistedModels(availableModels);
 	return matchPatternWithContext(
 		pattern,
 		availableModels,
@@ -1772,7 +1779,7 @@ export function resolveModelRoleValue(
 	availableModels: Model<Api>[],
 	options?: { settings?: Settings; roleLookup?: ModelRoleLookup; matchPreferences?: ModelMatchPreferences },
 ): ResolvedModelRoleValue {
-	availableModels = filterBlacklistedModels(availableModels);
+	availableModels = withoutBlacklistedModels(availableModels);
 	if (!roleValue) {
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
 	}
@@ -1861,7 +1868,7 @@ export function resolveModelFromString(
 ): Model<Api> | undefined {
 	const denied = modelSelectorBlacklistError(value, available);
 	if (denied) throw new Error(denied);
-	available = filterBlacklistedModels(available);
+	available = withoutBlacklistedModels(available);
 	const exact = available.find(model => `${model.provider}/${model.id}` === value);
 	if (exact) return exact;
 	const parsed = parseModelString(value, {
@@ -1885,7 +1892,7 @@ export function resolveModelFromSettings(options: {
 	roleOrder?: readonly ModelRole[];
 }): Model<Api> | undefined {
 	const { settings, matchPreferences, roleOrder } = options;
-	const availableModels = filterBlacklistedModels(options.availableModels);
+	const availableModels = withoutBlacklistedModels(options.availableModels);
 	const roles = roleOrder ?? CHAT_MODEL_ROLE_IDS;
 	let sawConfiguredProviderQualifiedRole = false;
 	for (const role of roles) {
@@ -2304,7 +2311,7 @@ export async function resolveModelScope(
 	preferences?: ModelMatchPreferences,
 	settings?: Settings,
 ): Promise<ScopedModel[]> {
-	const availableModels = filterBlacklistedModels(modelRegistry.getAvailable());
+	const availableModels = withoutBlacklistedModels(modelRegistry.getAvailable());
 	const matchPreferences = mergeModelMatchPreferences(settings, preferences);
 	const context = buildPreferenceContext(availableModels, matchPreferences);
 	const scopedModels: ScopedModel[] = [];
@@ -2458,7 +2465,7 @@ export function filterAvailableModelsByEnabledPatterns(
 	patterns: readonly string[],
 	settings?: Settings,
 ): Model<Api>[] {
-	available = filterBlacklistedModels(available);
+	available = withoutBlacklistedModels(available);
 	if (patterns.length === 0) return available;
 
 	const context = buildPreferenceContext(available, getModelMatchPreferences(settings));
@@ -2596,8 +2603,8 @@ export function resolveCliModel(options: CliModelOptions): ResolveCliModelResult
 
 	const scoped = { ...options, cliModel };
 	const scope: CliModelScope = {
-		all: filterBlacklistedModels(modelRegistry.getAll()),
-		available: filterBlacklistedModels(preferredModels ?? modelRegistry.getAvailable()),
+		all: withoutBlacklistedModels(modelRegistry.getAll()),
+		available: withoutBlacklistedModels(preferredModels ?? modelRegistry.getAvailable()),
 	};
 	const disabled = disabledProviderIds(settings);
 	if (disabled.size === 0) return resolveCliModelInScope(scoped, scope);
@@ -2990,7 +2997,7 @@ export async function findSmolModel(
 	modelRegistry: ModelLookupRegistry,
 	savedModel?: string,
 ): Promise<Model<Api> | undefined> {
-	const availableModels = filterBlacklistedModels(modelRegistry.getAvailable());
+	const availableModels = withoutBlacklistedModels(modelRegistry.getAvailable());
 	if (availableModels.length === 0) return undefined;
 
 	// 1. Try saved model from settings
@@ -3031,7 +3038,7 @@ export async function findSlowModel(
 	modelRegistry: ModelLookupRegistry,
 	savedModel?: string,
 ): Promise<Model<Api> | undefined> {
-	const availableModels = filterBlacklistedModels(modelRegistry.getAvailable());
+	const availableModels = withoutBlacklistedModels(modelRegistry.getAvailable());
 	if (availableModels.length === 0) return undefined;
 
 	// 1. Try saved model from settings

@@ -2480,7 +2480,8 @@ describe("anthropic cache control for OpenAI-compatible chat completions", () =>
 	});
 
 	it("caches stable OpenRouter history before the per-call elapsed note", async () => {
-		const model = getBundledModel("openrouter", "anthropic/claude-sonnet-4") as Model<"openai-completions">;
+		// The OpenRouter roster no longer lists claude-sonnet-4 (upstream catalog regeneration).
+		const model = getBundledModel("openrouter", "anthropic/claude-sonnet-4.6") as Model<"openai-completions">;
 		const note = {
 			role: "developer" as const,
 			content:
