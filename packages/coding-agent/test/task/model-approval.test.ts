@@ -17,6 +17,7 @@ import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { EvalTool } from "@oh-my-pi/pi-coding-agent/tools/eval";
+import * as availability from "@oh-my-pi/pi-coding-agent/session/provider-exhaustion";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import {

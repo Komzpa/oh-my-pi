@@ -15,7 +15,7 @@ import { findRetryFallbackCandidates } from ${JSON.stringify(path.join(sourceDir
 const context = {
 	chains: { default: ["deepseek/deepseek-v4-pro", "kimi-code/kimi-for-coding", "codex-lb/gpt-5.5"] },
 	getModelRole: () => undefined,
-	modelLookup: { find: () => ({}), hasProvider: () => true },
+	modelLookup: { find: (provider, id) => ({ provider, id }), hasProvider: () => true },
 };
 function pick() {
 	const exclusions = [];

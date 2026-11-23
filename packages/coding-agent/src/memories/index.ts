@@ -1406,19 +1406,21 @@ async function resolveMemoryModel(options: {
 	const { modelRegistry, session, fallbackRole } = options;
 	const provider = session.model?.provider;
 	if (cfgOffline.get(session.settings) && !provider) return undefined;
-	const models = cfgOffline.get(session.settings)
-		? modelRegistry.getAvailable().filter(model => model.provider === provider)
-		: modelRegistry.getAvailable();
+	const registryAvailable = modelRegistry.getAvailable();
+	const available = cfgOffline.get(session.settings)
+		? registryAvailable.filter(model => model.provider === provider)
+		: registryAvailable;
 	const requestedModel = session.settings.getModelRole(fallbackRole) || session.settings.getModelRole("default");
 	if (requestedModel) {
-		const resolved = resolveModelRoleValue(requestedModel, models, {
+		const resolved = resolveModelRoleValue(requestedModel, available, {
 			settings: session.settings,
 			matchPreferences: getModelMatchPreferences(session.settings),
 		});
 		if (resolved.model) return resolved.model;
 	}
 	return (
-		models.find(model => model.provider === session.model?.provider && model.id === session.model.id) ?? models[0]
+		available.find(model => model.provider === session.model?.provider && model.id === session.model.id) ??
+		available[0]
 	);
 }
 

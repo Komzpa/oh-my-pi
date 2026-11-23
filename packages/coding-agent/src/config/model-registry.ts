@@ -88,6 +88,15 @@ import { probeProviderInference } from "../session/provider-availability-probe";
 import { redactUrlForLog } from "../utils/redact-url";
 import type { SearchParams } from "../web/search/providers/base";
 import type { SearchResponse } from "../web/search/types";
+import {
+	clearProviderAuthOnCredentialChange,
+	isProviderExhausted,
+	probeUnavailableProviders,
+	type ProviderProbeOptions,
+	providerExhaustionRecord,
+	recordProviderFailure,
+} from "../session/provider-exhaustion";
+import { probeProviderInference } from "../session/provider-availability-probe";
 import { type ApiKeyResolverModel, type ApiKeyResolverOptions, createApiKeyResolver } from "./api-key-resolver";
 import type { ConfigError, ConfigFile, LoadResult } from "./config-file";
 import {
