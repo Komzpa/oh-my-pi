@@ -145,6 +145,8 @@
 - Changed the task tool prompt so the `effort` hint (when `task.enableEffort` is on) defaults to `lo` for lookups, mechanical edits and known fixes, `med` for ordinary implementation, and `hi` only when `solutionSpace` names genuinely open choices ([#16664](https://github.com/can1357/oh-my-pi/pull/16664) by [@Komzpa](https://github.com/Komzpa))
 - Added an `env` parameter to the `bash` tool: extra environment variables for finite, async, auto-backgrounded, PTY, ACP-terminal and service commands; caller values win over direnv defaults, and an empty object counts as not set ([#16653](https://github.com/can1357/oh-my-pi/pull/16653) by [@Komzpa](https://github.com/Komzpa))
 - Fixed subagent output ids growing a suffix chain (`Worker-3-2-2`) when an already-suffixed id is requested again; a taken `base-N...` id now restarts from the next free `base-N`. ([#16643](https://github.com/can1357/oh-my-pi/pull/16643) by [@Komzpa](https://github.com/Komzpa))
+- Invalid model configuration retains validated last-good custom providers in memory and across restarts through a private sidecar. Commented JSONC snapshots retain their original parser, and CLI warnings report recovery only when a validated configuration was retained ([#16540](https://github.com/can1357/oh-my-pi/pull/16540) by [@Komzpa](https://github.com/Komzpa))
+- Invalid `models.yml` warnings report the offending YAML source line rather than JavaScript call-site lines or unrelated provider keys ([#16540](https://github.com/can1357/oh-my-pi/pull/16540) by [@Komzpa](https://github.com/Komzpa))
 
 ## [19.1.0] - 2026-11-21
 
