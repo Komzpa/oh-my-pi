@@ -9,6 +9,9 @@
 - Prevented oversized handoffs from reaching the provider by detecting when prepared context exceeds the target model’s context window.
 - Preserved provider error status, error identifiers, retry classification, and cancellation markers on failed or cancelled assistant turns.
 - Fixed speculative tool calls hanging when discarded or aborted before execution completed.
+### Fixed
+
+- Fixed skipped tool calls under a pending soft requirement claiming the turn had ended: the skip now names the required tool and the pending reminder, and renders dimmed instead of as an error ([#16535](https://github.com/can1357/oh-my-pi/pull/16535) by [@Komzpa](https://github.com/Komzpa))
 
 ## [19.1.0] - 2026-11-21
 
