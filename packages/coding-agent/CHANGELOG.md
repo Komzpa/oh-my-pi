@@ -202,6 +202,10 @@
 - Fixed the built-in `ts-set-map`, `ts-import-type` and `ts-no-any` rules reminding you about code they allow: an empty or computed `Set`/`Map`, a runtime `await import()`, or the word "any" in a comment ([#16242](https://github.com/can1357/oh-my-pi/pull/16242) by [@will-bogusz](https://github.com/will-bogusz))
 - Moved persisted subagent usage-history parsing off the UI thread so restoring historical costs does not monopolize input handling ([#16534](https://github.com/can1357/oh-my-pi/pull/16534) by [@Komzpa](https://github.com/Komzpa))
 
+### Changed
+
+- Terminal tab titles now read `<project> · <task>`: the project is the Git/Jujutsu repository root (or the directory outside a repo), and the task is the in-progress todo row of the session you are viewing, falling back to the session name; the native Tern/TSP title uses the same label. A collab guest labels the tab with the last segment of the host's working directory, parsed on any OS and never looked up on the guest's filesystem ([#16531](https://github.com/can1357/oh-my-pi/pull/16531) by [@Komzpa](https://github.com/Komzpa))
+
 ## [19.1.0] - 2026-11-21
 
 ### Breaking Changes
