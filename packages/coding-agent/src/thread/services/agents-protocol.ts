@@ -3,7 +3,8 @@
  * worker's proxies to the main thread's instances (see `./agents`).
  */
 import type { IrcDeliveryReceipt, IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
-import type { IrcWaitFilter } from "../../irc/bus";
+import type { IrcWaitFilter, UnansweredSend } from "../../irc/bus";
+import type { AwaitHoldOptions, AwaitWaiter } from "../../registry/agent-awaits";
 import type { AdoptOptions, AgentReleaseOptions } from "../../registry/agent-lifecycle";
 import type {
 	AgentHistorySummary,
@@ -43,7 +44,7 @@ export type AgentRegistryProtocol = {
 	markResultAccepted: RpcMethod<[id: string, expected?: AgentRefExpectation, responseAt?: number], boolean>;
 	clearInitialPromptPending: RpcMethod<[id: string, session: AgentSessionHandle], boolean>;
 	staleAcceptedRuns: RpcMethod<[], AgentRef[]>;
-	setActivity: RpcMethod<[id: string, activity: string], void>;
+	setActivity: RpcMethod<[id: string, activity: string, expected?: AgentRefExpectation], void>;
 	restoreIdentity: RpcMethod<
 		[id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }],
 		boolean
@@ -60,8 +61,10 @@ export type AgentRegistryProtocol = {
 	isRunning: RpcMethod<[ref: AgentRef], boolean>;
 	/** One forwarding subscription per worker; returns a sync unsubscribe. */
 	subscribe: RpcMethod<[listener: RegistryListener], () => void>;
-	awaitsHold: RpcMethod<[waiter: string, awaited: readonly string[], options: { interruptible: boolean }], () => void>;
+	awaitsHold: RpcMethod<[waiter: string, awaited: readonly string[], options: AwaitHoldOptions], () => void>;
 	awaitsBlocksOn: RpcMethod<[agent: string, target: string, sentAt: number], boolean>;
+	awaitsBlockedVia: RpcMethod<[agent: string, target: string, sentAt: number], readonly string[] | undefined>;
+	awaitsWaitersOn: RpcMethod<[target: string], AwaitWaiter[]>;
 	/** One forwarding subscription per worker; returns a sync unsubscribe. */
 	awaitsSubscribe: RpcMethod<[listener: () => void], () => void>;
 };
@@ -78,13 +81,6 @@ export type AgentLifecycleProtocol = {
 	release: RpcMethod<[id: string, expected?: AgentRefExpectation, options?: AgentReleaseOptions], boolean>;
 };
 
-/** Result row of `IrcBusApi.unansweredSends`. */
-export interface UnansweredSend {
-	to: string;
-	sentAt: number;
-	promised: boolean;
-}
-
 /** `IrcBusApi` over the link. */
 export type IrcBusProtocol = {
 	resolveShellReplyTarget: RpcMethod<[recipient: string], string>;
@@ -93,6 +89,7 @@ export type IrcBusProtocol = {
 	exchangedSince: RpcMethod<[from: string, to: string, sinceTs: number], boolean>;
 	sentSince: RpcMethod<[from: string, to: string, sinceTs: number], boolean>;
 	unansweredSends: RpcMethod<[from: string, sinceTs: number], UnansweredSend[]>;
+	lastMessageAt: RpcMethod<[from: string, to: string], number | undefined>;
 	wait: RpcMethod<
 		[
 			agentId: string,
@@ -104,6 +101,7 @@ export type IrcBusProtocol = {
 		IrcMessage | null
 	>;
 	take: RpcMethod<[agentId: string, from?: string], IrcMessage | undefined>;
+	park: RpcMethod<[msg: Omit<IrcMessage, "id" | "ts">], IrcMessage>;
 	unreadCount: RpcMethod<[agentId: string], number>;
 	recordReply: RpcMethod<[from: string, to: string], void>;
 };

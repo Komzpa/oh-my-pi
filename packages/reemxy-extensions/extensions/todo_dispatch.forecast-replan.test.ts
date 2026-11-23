@@ -99,7 +99,7 @@ test("an unrelated held row permits both layers of deadline administration and i
 	const dependent = { content: "Apply cooling layout", status: "pending", schedule: { dependencies: [held.content], resources: ["/fixture/cooling"], estimate: estimate(now, 600) } };
 	const h = await demandHarness([held, ready, dependent], now + 3600_000);
 	const call = (toolName, input) => h.handlers.get("tool_call")({ toolName, input, toolCallId: "administration" }, h.ctx);
-	expect((await call("write", { path: "xd://goal_deadline", content: JSON.stringify({ action: "status" }) }))?.block).not.toBe(true);
+	expect((await call("bash", { command: `goal_deadline '${JSON.stringify({ action: "status" })}'` }))?.block).not.toBe(true);
 	expect((await call("goal_deadline", { action: "status" }))?.block).not.toBe(true);
 	expect((await call("goal_deadline", { action: "set", user_message: "move the deadline to 2026-11-11 12:00" }))?.block).not.toBe(true);
 	expect((await call("task", { tasks: [{ name: "Roof", task: ready.content, resources: ready.schedule.resources }] }))?.block).not.toBe(true);

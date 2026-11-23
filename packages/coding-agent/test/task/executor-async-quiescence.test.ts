@@ -51,7 +51,7 @@ interface AsyncQuiescenceHarness {
 	session: AgentSession;
 	prompts: string[];
 	abortCalls: () => number;
-	settleCalls: () => number;
+	runEndWaits: () => number;
 	emitTerminalYield: (data: unknown) => void;
 	emitAssistant: (text: string, totalTokens?: number) => void;
 	finishJob: () => void;
@@ -61,9 +61,18 @@ interface AsyncSessionOptions {
 	abort?: () => Promise<void>;
 	dispose?: () => Promise<void>;
 	asyncJobManager?: AsyncJobManager;
+	/** The run is held open by this live child agent instead of a background job. */
+	childAgent?: string;
 }
 
-/** Mock owner work completes during settlement, injecting an async result. */
+/**
+ * Mock session with the run-lifecycle surface the barrier drives:
+ * `isRunActive` / `wakeSources` / `getAsyncJobSnapshot` / `waitForRunEnd`.
+ * The run stays open while the job runs; the job "finishes" during the first
+ * wait for the run end, which injects the async-result follow-up (custom
+ * message_start) and a plain assistant reaction WITHOUT a fresh yield —
+ * exactly the review's stale-yield scenario.
+ */
 function createAsyncSession(
 	onPrompt: (params: { text: string; promptIndex: number; harness: AsyncQuiescenceHarness }) => void,
 	options: AsyncSessionOptions = {},
@@ -72,9 +81,11 @@ function createAsyncSession(
 	const state = { messages: [] as AssistantMessage[] };
 	const prompts: string[] = [];
 	let abortCount = 0;
-	let settleCount = 0;
+	let runEndWaitCount = 0;
 	let pendingAsync = true;
-	let runningJobs: Array<{ id: string; label?: string }> = [{ id: "job-1", label: "background build" }];
+	let runningJobs: Array<{ id: string; label?: string }> = options.childAgent
+		? []
+		: [{ id: "job-1", label: "background build" }];
 	let toolCallSeq = 0;
 
 	const emit = (event: AgentSessionEvent) => {
@@ -125,7 +136,7 @@ function createAsyncSession(
 		session: undefined as unknown as AgentSession,
 		prompts,
 		abortCalls: () => abortCount,
-		settleCalls: () => settleCount,
+		runEndWaits: () => runEndWaitCount,
 		emitTerminalYield,
 		emitAssistant,
 		finishJob,
@@ -141,7 +152,7 @@ function createAsyncSession(
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
-		getMountedXdevToolNames: () => [],
+		getMountedToolCommandNames: () => [],
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {
@@ -155,11 +166,21 @@ function createAsyncSession(
 			return true;
 		},
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
-		hasPendingAsyncWork: () => pendingAsync,
+		get isRunActive() {
+			return pendingAsync;
+		},
+		get wakeSources() {
+			if (!pendingAsync) return undefined;
+			const agents = options.childAgent ? [options.childAgent] : [];
+			return { jobs: runningJobs.map(job => job.id), agents, queued: false };
+		},
 		getAsyncJobSnapshot: () => ({ running: runningJobs, recent: [] }),
-		settleAsyncWork: async () => {
-			settleCount += 1;
-			harness.finishJob();
+		waitForRunEnd: async () => {
+			runEndWaitCount += 1;
+			if (!pendingAsync) return;
+			// A child agent that finishes without messaging back ends the run as is.
+			if (options.childAgent) pendingAsync = false;
+			else harness.finishJob();
 		},
 		abort: async () => {
 			abortCount += 1;
@@ -285,13 +306,14 @@ describe("runSubprocess async work and terminal acceptance", () => {
 		const result = await runSubprocess({
 			cwd: "/tmp",
 			agent: baseAgent,
+			outputSchema: {},
 			task: "do the work",
 			index: 0,
 			id: "quiescence-first-yield",
 		});
 
 		expect(harness.prompts).toHaveLength(1);
-		expect(harness.settleCalls()).toBe(0);
+		expect(harness.runEndWaits()).toBe(0);
 		expect(harness.abortCalls()).toBe(1);
 		expect(result.exitCode).toBe(0);
 		expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
@@ -300,7 +322,7 @@ describe("runSubprocess async work and terminal acceptance", () => {
 
 	it("waits for a pending owner job before spending a yield reminder", async () => {
 		const harness = createAsyncSession(({ harness: h }) => {
-			if (h.settleCalls() === 0) {
+			if (h.runEndWaits() === 0) {
 				h.emitAssistant("Waiting for job-1.");
 				return;
 			}
@@ -311,12 +333,13 @@ describe("runSubprocess async work and terminal acceptance", () => {
 		const result = await runSubprocess({
 			cwd: "/tmp",
 			agent: baseAgent,
+			outputSchema: {},
 			task: "verify the build",
 			index: 0,
 			id: "quiescence-wait-before-yield",
 		});
 
-		expect(harness.settleCalls()).toBe(1);
+		expect(harness.runEndWaits()).toBe(1);
 		expect(harness.prompts).toHaveLength(2);
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toContain("Build failed; job-1 delivered its result.");
@@ -331,19 +354,20 @@ describe("runSubprocess async work and terminal acceptance", () => {
 		const result = await runSubprocess({
 			cwd: "/tmp",
 			agent: baseAgent,
+			outputSchema: {},
 			task: "do the work",
 			index: 0,
 			id: "quiescence-no-refresh",
 		});
 
 		expect(harness.prompts).toHaveLength(1);
-		expect(harness.settleCalls()).toBe(0);
+		expect(harness.runEndWaits()).toBe(0);
 		expect(result.exitCode).toBe(0);
 		expect(result.error).toBeUndefined();
 		expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
 	});
 
-	it("terminates immediately on yield when no owner async work is pending", async () => {
+	it("terminates immediately on yield when nothing can wake the run", async () => {
 		const harness = createAsyncSession(({ promptIndex, harness: h }) => {
 			if (promptIndex === 1) {
 				h.finishJob();
@@ -355,6 +379,7 @@ describe("runSubprocess async work and terminal acceptance", () => {
 		const result = await runSubprocess({
 			cwd: "/tmp",
 			agent: baseAgent,
+			outputSchema: {},
 			task: "do the work",
 			index: 0,
 			id: "quiescence-no-async",
@@ -385,6 +410,7 @@ describe("runSubprocess async work and terminal acceptance", () => {
 		const run = runSubprocess({
 			cwd: "/tmp",
 			agent: baseAgent,
+			outputSchema: {},
 			task: "do the work",
 			index: 0,
 			id: "quiescence-no-second-idle",
@@ -443,6 +469,7 @@ describe("runSubprocess async work and terminal acceptance", () => {
 			cwd: "/tmp",
 			asyncJobManager: manager,
 			agent: baseAgent,
+			outputSchema: {},
 			task: "do the work",
 			index: 0,
 			id: "cleanup-timeout",

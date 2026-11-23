@@ -45,7 +45,6 @@ import {
 	cfgStartupQuiet,
 	cfgStartupSetupWizard,
 	cfgStartupShowSplash,
-	cfgTuiCompleteScrollback,
 	cfgTuiImeSafeCursor,
 	cfgTuiMaxInlineImages,
 	cfgTuiResizeScrollback,
@@ -310,7 +309,6 @@ describe("Composer prepaint", () => {
 			showHardwareCursor: cfgShowHardwareCursor.get(settings),
 			maxInlineImages: cfgTuiMaxInlineImages.get(settings),
 			resizeScrollback: cfgTuiResizeScrollback.get(settings),
-			completeScrollback: cfgTuiCompleteScrollback.get(settings),
 			imeSafeCursor: cfgTuiImeSafeCursor.get(settings),
 			autocompleteMaxVisible: cfgAutocompleteMaxVisible.get(settings),
 			spellingTypoDetection: cfgSpellingTypoDetection.get(settings),
@@ -640,10 +638,14 @@ describe("Composer prepaint", () => {
 				await mode.init({ suppressWelcomeIntro: true });
 				expect(resumed).not.toHaveBeenCalled();
 				expect(mode.editor.getExpandedText()).toBe(draft);
-				expect(Bun.stripANSI(mode.editorContainer.render(100).join("\n"))).toContain("Where?");
-				// A draft intentionally owns editing until cleared. Ctrl+U retains it
-				// in the editor kill ring, letting Ask receive navigation and Enter.
-				if (draft) terminal.sendInput("\x15");
+				// The restored Ask renders in its own container since the upstream ask UI move, not in the composer.
+				expect(Bun.stripANSI(mode.askContainer.render(100).join("\n"))).toContain("Where?");
+				// A draft intentionally owns editing until cleared. Ctrl+U retains it in the
+				// editor kill ring; Shift+Tab then hands the keys to the Ask (upstream ask UI).
+				if (draft) {
+					terminal.sendInput("\x15");
+					terminal.sendInput("\x1b[Z");
+				}
 				terminal.sendInput("\x1b[B");
 				terminal.sendInput("\r");
 				expect(resumed).not.toHaveBeenCalled();
@@ -1044,7 +1046,6 @@ describe("Composer prepaint", () => {
 			showHardwareCursor: config.showHardwareCursor,
 			maxInlineImages: config.maxInlineImages,
 			resizeScrollback: config.resizeScrollback,
-			completeScrollback: config.completeScrollback,
 			imeSafeCursor: config.imeSafeCursor,
 			autocompleteMaxVisible: config.autocompleteMaxVisible,
 			spellingTypoDetection: cfgSpellingTypoDetection.get(settings),

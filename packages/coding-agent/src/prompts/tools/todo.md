@@ -16,19 +16,19 @@ After each successful status/list-changing op (not `view` or `schedule`): if not
 
 ## Operations
 
-| `op`       | Fields                                                                       | Effect                                                                                                       |
-| ---------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init`     | `list: [{phase, items: string[]}]`                                           | Initialize full list; replaces existing                                                                      |
-| `init`     | `items: string[]`                                                            | Flattened single-phase init                                                                                  |
-| `start`    | `task`                                                                       | Mark in progress                                                                                             |
-| `done`     | `task`, `phase`, or `items: string[]` (batch)                                | Mark completed                                                                                               |
-| `drop`     | `task`, `phase`, or `items: string[]` (batch)                                | Mark abandoned                                                                                               |
-| `block`    | `task` or `phase`; required `reason`                                         | Block only for a concise (≤160 normalized characters) concrete external gate naming its actor or condition; agent-actionable unblocking work must be tasks |
-| `unblock`  | `task` or `phase`                                                            | Blocked task → `pending`                                                                                     |
-| `rm`       | optional `task` or `phase`                                                   | Remove task/phase; omit both → clear                                                                         |
-| `append`   | `phase`; `items: string[]`                                                   | Append tasks to phase; lazily creates phase                                                                  |
-| `schedule` | `updates: [{task, content?, dependencies?, owner?, resources?, estimate?, evidence?}]` | Atomically update scheduling metadata; does not change status                                                |
-| `view`     | —                                                                            | Read-only; echo list                                                                                         |
+|`op`|Fields|Effect|
+|---|---|---|
+|`init`|`list: [{phase, items: string[]}]`|Initialize full list; replaces existing|
+|`init`|`items: string[]`|Flattened single-phase init|
+|`start`|`task`|Mark in progress|
+|`done`|`task`, `phase`, or `items: string[]` (batch)|Mark completed|
+|`drop`|`task`, `phase`, or `items: string[]` (batch)|Mark abandoned|
+|`block`|`task` or `phase`; required `reason`|Block only for a concise (≤160 normalized characters) concrete external gate naming its actor or condition; agent-actionable unblocking work must be tasks|
+|`unblock`|`task` or `phase`|Blocked task → `pending`|
+|`rm`|optional `task` or `phase`|Remove task/phase; omit both → clear|
+|`append`|`phase`; `items: string[]`|Append tasks to phase; lazily creates phase|
+|`schedule`|`updates: [{task, content?, dependencies?, owner?, resources?, estimate?, evidence?}]`|Atomically update scheduling metadata; does not change status|
+|`view`|—|Read-only; echo list|
 
 `schedule` identifies tasks by their exact unique content. Dependencies are exact task-content references, not phase/list ordering; only add edges for real prerequisites. `owner: ""` clears the owner; `resources: []` clears exclusive resources. An estimate has optimistic/likely/pessimistic **remaining seconds** (O/M/P), qualitative confidence, and a nonblank `basis`; `likelySeconds` is the most likely duration, not the mean. Native ETA is the P95 of simulated beta-PERT completion times through the dependency/blocking graph and resource constraints, not a sum of task percentiles. Shared predecessors are sampled once; parallel joins wait for every predecessor. Expected CPM uses the mean `(O + 4M + P) / 6`. Forecasts disclose independent-duration and numerical-sampling assumptions; unknown blockers keep dependent ETAs unknown. O/P are scenario bounds, not a statistical confidence interval. Estimate every row from its own scope: a `schedule` call that gives three or more rows the same O/M/P is refused, and a result may list the median and p90 of finished runs for an owner's role/model; calibrate against it. Runtime supplies the timestamp. Nonempty `evidence` records observed progress and its timestamp, but never marks a task done.
 `content` on a schedule update renames the row; its status, owner and history stay attached, and dependency references follow the new title. Blank or colliding titles reject the entire schedule batch.
@@ -65,6 +65,6 @@ User gives multi-step plan—phased todo, numbered/bulleted checklist, or "N bug
 - Enumerate all; NEVER summarize into fewer tasks, sample "the important ones", drop items, or track the rest from memory.
 </critical>
 
-For a user decision, use `schedule` with `review: "user"` and `reviewPage: "http://..."` on the decision row. Publish one review card per decision (accept/redo/drop). Set `reviewCard` to the published card slug. The runtime reads `api/answers` about every 60 seconds and on lead idle, and applies current accept/redo/drop answers through the native review path once per row/card/content hash/answer. Legacy rows match one unique card by its exact landed row, title or content; ambiguous matches stay unresolved. Hashes come from the manifest or rendered `data-id`/`data-sha`. Stale answers are reported to the lead, never applied. Read saved decisions before asking again. `reviewPage: null` clears the artifact.
+For a user decision, use `schedule` with `review: "user"` and `reviewPage: "http://…"` on the decision row. Publish one review card per decision (accept/redo/drop). Set `reviewCard` to the published card slug. The runtime reads `api/answers` about every 60 seconds and on lead idle, and applies current accept/redo/drop answers through the native review path once per row/card/content hash/answer. Legacy rows match one unique card by its exact landed row, title or content; ambiguous matches stay unresolved. Hashes come from the manifest or rendered `data-id`/`data-sha`. Stale answers are reported to the lead, never applied. Read saved decisions before asking again. `reviewPage: null` clears the artifact.
 
 At 50 closed rows, a row closure automatically archives older closed history. The last ten closed rows, open-row prerequisites and pending review/handoff rows stay live. Use `view` with `archive: true` to list the archive, or `view` with `task` to retrieve any row by its exact content. Archived rows remain addressable for review acceptance and reopening.

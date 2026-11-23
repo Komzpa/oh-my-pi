@@ -1108,6 +1108,20 @@ export function isGlobalKillCommand(command: string, depth = 0): boolean {
   }
   return false;
 }
+/**
+ * `bash` running exactly one `goal_deadline` tool command (upstream's replacement for
+ * `write xd://goal_deadline`). Anything chained, piped, substituted or redirected
+ * outside single quotes is ordinary shell work and stays gated.
+ */
+function isSoleDeadlineCommand(call: GateCall): boolean {
+  if (call.name !== "bash") return false;
+  const command = (call.arguments as { command?: unknown } | undefined)?.command;
+  return typeof command === "string" && isSoleDeadlineCommandText(command);
+}
+function isSoleDeadlineCommandText(command: string): boolean {
+  if (!/^\s*goal_deadline(\s|$)/.test(command)) return false;
+  return !/[;&|`$()<>\n\\"]/.test(command.replace(/'[^']*'/g, "''").trim());
+}
 export function decideGateCall(
   call: GateCall,
   gates: readonly ActiveGate[],
@@ -1119,13 +1133,13 @@ export function decideGateCall(
   if (call.name === "context_notes") return { allowed: true, remedyGateIds: [] };
   // Device dispatch invokes the canonical tool after admitting its outer write.
   // Deadline authorization remains the deadline tool's own responsibility.
-  if (call.name === "goal_deadline") return { allowed: true, remedyGateIds: [] };
+  if (call.name === "goal_deadline" || isSoleDeadlineCommand(call)) return { allowed: true, remedyGateIds: [] };
   if (isKill(call)) return { allowed: true, remedyGateIds: [] };
   // Messaging owns target lookup and rejects unknown ids. Gates must not require a
   // running task: idle/parked workers and shell:/peer: routes are also valid replies.
   if (call.name === "write") {
     const path = (call.arguments as { path?: unknown } | undefined)?.path;
-    if (typeof path === "string" && (path.startsWith("agent://") || path === "xd://goal_deadline")) return { allowed: true, remedyGateIds: [] };
+    if (typeof path === "string" && path.startsWith("agent://")) return { allowed: true, remedyGateIds: [] };
   }
   if (gates.length === 0) return { allowed: true, remedyGateIds: [] };
   const passing = gates.filter((gate) => {
@@ -3665,6 +3679,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // for untrusted repositories or env files. Do not admit general bash scripts.
     // Match the entire raw command before parsing: no wrappers, expansions,
     // redirects, separators, extra arguments, or interpreter options are allowed.
+    // Deadline administration is the lead's own, like the direct goal_deadline tool.
+    if (isSoleDeadlineCommandText(command)) return true;
     if (!command.includes("\n") && /^bash[ \t]+\.agents\/skills\/bitbucket-prs\/scripts\/bb-pr\.sh[ \t]+readback[ \t]+[1-9][0-9]*$/.test(command)) return true;
     type Token = { value: string; plain: boolean; dynamic: boolean; newline?: boolean; assignment?: boolean };
     const separators: Record<string, true> = { ";": true, "&&": true, "||": true, "|": true };

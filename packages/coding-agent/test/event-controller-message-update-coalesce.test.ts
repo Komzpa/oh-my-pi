@@ -134,7 +134,6 @@ describe("EventController message_update coalescing", () => {
 			await controller.handleEvent({ type: "agent_end", messages: [] });
 			expect(stop).toHaveBeenCalledTimes(workerStreaming ? 0 : 1);
 			expect(ctx.loadingAnimation === undefined).toBe(!workerStreaming);
-			expect(ctx.composer.setRunActive).toHaveBeenLastCalledWith(workerStreaming);
 		},
 	);
 

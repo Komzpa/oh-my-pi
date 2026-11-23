@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { resetLoopPhaseWindow, takeLoopPhaseAttribution } from "@oh-my-pi/pi-utils/loop-phase";
+import { createJscLoopSampler, type LoopSampler, summarizeBlock } from "./loop-sampler";
 
 export interface LoopWatchdogOptions {
 	/** How far ahead each probe tick is scheduled, in ms. Default 250. */
@@ -15,8 +16,10 @@ export interface LoopWatchdogOptions {
 	cpuNow?: () => number;
 	/** Timer source; injectable for tests. Default `setTimeout`. */
 	schedule?: (cb: () => void, ms: number) => LoopWatchdogTimer;
+	/** Stack sampler naming the code behind a block; null disables. Default {@link createJscLoopSampler}. */
 	/** Called when a real loop block is reported. */
 	onBlocked?: (event: { blockedMs: number; cpuMs: number; phase: string }) => void;
+	sampler?: LoopSampler | null;
 }
 
 /**
@@ -58,6 +61,12 @@ const CPU_BUSY_RATIO = 0.01;
  * alone cannot tell them apart, and suppressing on duration discards exactly the
  * worst stalls. Only a gap the process spent negligible CPU on is treated as
  * sleep. CPU accounting is process-wide, so worker activity errs toward logging.
+ *
+ * With a sampler, a logged block also carries `cause`, `causeShare` and `top`
+ * from {@link summarizeBlock}: the stack frames that dominated the blocked
+ * window, which name the culprit where no phase label does. Every valid tick
+ * drains the sampler, logged or not, so its buffer never outgrows one interval,
+ * and stop() stops it.
  */
 export class LoopWatchdog {
 	#intervalMs: number;
@@ -77,6 +86,7 @@ export class LoopWatchdog {
 	// cannot leave the pre-stop timer chain rescheduling itself in parallel.
 	#generation = 0;
 	#handle: LoopWatchdogTimer | undefined;
+	#sampler: LoopSampler | null;
 
 	constructor(options: LoopWatchdogOptions = {}) {
 		this.#intervalMs = options.intervalMs ?? 250;
@@ -96,12 +106,18 @@ export class LoopWatchdog {
 				return { unref: () => timer.unref?.(), cancel: () => clearTimeout(timer) };
 			});
 		this.#onBlocked = options.onBlocked;
+		this.#sampler = options.sampler === undefined ? createJscLoopSampler() : options.sampler;
 	}
 
 	start(): void {
 		if (this.#running) return;
 		this.#running = true;
 		this.#stallEndedAt = Number.NEGATIVE_INFINITY;
+		if (this.#sampler) {
+			this.#sampler.start();
+			// Samples from before this run would be blamed on its first block.
+			this.#sampler.drain();
+		}
 		this.#armTick();
 	}
 
@@ -113,6 +129,7 @@ export class LoopWatchdog {
 		this.#generation++;
 		this.#handle?.cancel?.();
 		this.#handle = undefined;
+		this.#sampler?.stop();
 		resetLoopPhaseWindow();
 	}
 
@@ -129,7 +146,9 @@ export class LoopWatchdog {
 		const now = this.#now();
 		if (now - this.#stallEndedAt <= this.#thresholdMs) return true;
 		const overdueMs = now - this.#expected;
-		return overdueMs > this.#thresholdMs && !this.#isSuspension(overdueMs, this.#cpuNow() - this.#expectedCpu);
+		if (overdueMs <= this.#thresholdMs) return false;
+		// Sampling CPU time is a syscall; only a gap long enough to be a suspension needs it.
+		return overdueMs <= this.#sleepMs || !this.#isSuspension(overdueMs, this.#cpuNow() - this.#expectedCpu);
 	}
 
 	/** A long gap the process spent negligible CPU on: it was suspended, not blocked. */
@@ -150,22 +169,31 @@ export class LoopWatchdog {
 		if (!this.#running || generation !== this.#generation) return;
 		const now = this.#now();
 		const blockedMs = now - this.#expected;
-		const cpuMs = this.#cpuNow() - this.#expectedCpu;
 		// Consume every valid tick, even without a warning, so no phase carries
 		// forward into a later, phase-less block.
 		const phase = takeLoopPhaseAttribution(now);
-		if (blockedMs > this.#thresholdMs && !this.#isSuspension(blockedMs, cpuMs)) {
-			this.#stallEndedAt = now;
-			// This establishes delayed macrotask delivery, not whether one synchronous
-			// block or a chain of microtasks occupied the intervening time.
-			logger.warn("ui.loop-blocked", {
-				cause: "macrotask-delay",
-				blockedMs: Math.round(blockedMs),
-				cpuMs: Math.round(cpuMs),
-				phase: phase?.label ?? "unknown",
-				...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
-			});
-			this.#onBlocked?.({ blockedMs, cpuMs, phase: phase?.label ?? "unknown" });
+		const samples = this.#sampler?.drain();
+		if (blockedMs > this.#thresholdMs) {
+			// Only a late tick needs CPU time: to classify the gap and to log it.
+			const cpuMs = this.#cpuNow() - this.#expectedCpu;
+			if (!this.#isSuspension(blockedMs, cpuMs)) {
+				this.#stallEndedAt = now;
+				const block = samples?.length ? summarizeBlock(samples, blockedMs) : undefined;
+				// This establishes delayed macrotask delivery, not whether one synchronous
+				// block or a chain of microtasks occupied the intervening time; a sampler
+				// that names the dominant stack frames refines `cause`.
+				logger.warn("ui.loop-blocked", {
+					cause: "macrotask-delay",
+					blockedMs: Math.round(blockedMs),
+					cpuMs: Math.round(cpuMs),
+					phase: phase?.label ?? "unknown",
+					...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
+					...(block
+						? { cause: block.cause, causeShare: Math.round(block.share * 100) / 100, top: block.top }
+						: {}),
+				});
+				this.#onBlocked?.({ blockedMs, cpuMs, phase: phase?.label ?? "unknown" });
+			}
 		}
 		this.#armTick();
 	}

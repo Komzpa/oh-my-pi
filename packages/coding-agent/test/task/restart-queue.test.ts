@@ -84,6 +84,8 @@ function makeSession(manager: SessionManager, options: SessionHarnessOptions = {
 			getPendingModelNewsCount: () => options.queuedInputCount ?? 0,
 		},
 		isStreaming: options.wasRunning ?? false,
+		// The registry counts an open run (upstream isRunning reads runStartedAt), not streaming alone.
+		runStartedAt: options.wasRunning ? Date.now() : undefined,
 		abort: options.abort,
 		beginRestartDrain: () => {
 			drainCount++;

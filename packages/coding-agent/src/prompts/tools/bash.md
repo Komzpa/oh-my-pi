@@ -1,5 +1,5 @@
 Persistent bash 5.3.
-cwd will reset after each turn, don't rely on cd; `pty` = interactive.
+cwd will reset after each turn, don't rely on cd{{#if hasPty}}; `pty` = interactive{{/if}}.
 {{#if hasLaunch}}
 Service calls accept materialized `async: false` and `timeout: 0` placeholders silently. An explicit `async: true` or nonzero `timeout` with `name` is ignored with a notice; use `ready.timeout` for readiness.
 {{/if}}
@@ -7,6 +7,7 @@ Internal URIs work as paths for builtins/coreutils, redirects, globs.
 In-process builtins, ahead of PATH: {{join builtins ", "}}.
 {{#if asyncEnabled}}
 `async` defers finite results but keeps the deadline (default {{defaultTimeoutSec}}s); `timeout: 0` for watchers and long jobs.
+`notify` (regex; implies `async`) sends each matching output line as a follow-up while the job runs, ahead of its result. Match only lines you'd act on: too many matches switch it off.
 {{/if}}
 When launched asynchronously, the current worker or session still owns the running command.
 Don't trunc output by habit, result will be summarized and saved as an artifact.
@@ -16,7 +17,8 @@ Long-lived services, including review pages and servers collecting user answers:
 - Do not launch these with `async`, `nohup`, or `&`: shell-owned jobs can be killed when OMP exits.
 - Keep the service name and URL for resuming work; stop it explicitly only when no longer needed.
 - `ready` requires `name`; no async/timeout; pty defaults true.
-- ready needs log regex or port (both if given); host defaults 127.0.0.1, ready.timeout 30s.
+- ready needs log regex or port (both if given); host defaults localhost, ready.timeout 30s.
+- `notify` (regex) sends each matching output line as a follow-up while the service runs.
 {{/if}}
 {{#if autoBackgroundEnabled}}
 Non-`pty` calls still running after {{autoBackgroundSeconds}}s (or 1s before `timeout`, if sooner) usually move to background job `bg_N` and keep running to `timeout`.

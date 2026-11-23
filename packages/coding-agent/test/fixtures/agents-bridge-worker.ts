@@ -18,6 +18,7 @@ import { AgentSession } from "../../src/session/agent-session";
 import { AuthStorage } from "../../src/session/auth-storage";
 import { convertToLlm } from "../../src/session/messages";
 import { SessionManager } from "../../src/session/session-manager";
+import { attachIrcWakeTurnMonitor } from "../../src/task/executor";
 import { isThreadId, setCurrentThreadId } from "../../src/thread/identity";
 import { PeerAgentSession } from "../../src/thread/peer-agent-session";
 import type { SubagentWorkerInit, SubagentWorkerReady, WorkerThreadLink } from "../../src/thread/protocol";
@@ -46,11 +47,13 @@ export interface AgentsProbe {
 	/** Build a real session (mock model) and register it as `id` in the (remote) registry. */
 	open(
 		id: string,
-		options: { sessionFile?: string; gated?: boolean; initialPromptPending?: boolean },
+		options: { sessionFile?: string; gated?: boolean; initialPromptPending?: boolean; monitored?: boolean },
 	): Promise<string>;
 	clearInitialPromptPending(id: string, ownerId: string): Promise<boolean>;
 	/** Run a prompt on the local session to completion. */
 	prompt(id: string, text: string): Promise<void>;
+	/** Emit a tool call on a specific session, even after another session takes its id. */
+	toolCall(key: string, toolName: string): Promise<void>;
 	/** Let gated model calls answer. */
 	openGate(): Promise<void>;
 	/** Rewrite the second message's text through `replaceMessages`, keeping the first and last objects (as pruning does). */
@@ -165,12 +168,25 @@ const probe: AgentsProbe = {
 			initialPromptPending: options.initialPromptPending,
 		});
 		registry.syncSessionStatus(id, session);
+		if (options.monitored) {
+			attachIrcWakeTurnMonitor(session, {
+				id,
+				agent: { name: id, description: "test", systemPrompt: "test", source: "bundled" },
+			});
+		}
 		return session.instanceKey;
 	},
 	clearInitialPromptPending: async (id, ownerId) =>
 		AgentRegistry.global().clearInitialPromptPending(id, local(ownerId)),
 	prompt: async (id, text) => {
 		await local(id).prompt(text);
+	},
+	toolCall: async (key, toolName) => {
+		const session = byKey.get(key);
+		if (!session) throw new Error(`no session ${key}`);
+		const call = { toolCallId: `${key}-${toolName}`, toolName };
+		session.agent.emitExternalEvent({ type: "tool_execution_start", ...call, args: {} });
+		session.agent.emitExternalEvent({ type: "tool_execution_end", ...call, result: { content: [] } });
 	},
 	rewriteInterior: async (id, text) => {
 		const session = local(id);

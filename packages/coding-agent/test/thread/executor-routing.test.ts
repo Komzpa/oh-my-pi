@@ -313,7 +313,6 @@ function runOptions(id: string, task: string, extra: Partial<ExecutorOptions> = 
 		id,
 		description: `routing ${id}`,
 		modelOverride: MODEL,
-		structured: false,
 		settings,
 		authStorage,
 		modelRegistry,
@@ -487,6 +486,22 @@ describe("subagent runs routed into pooled workers", () => {
 		TEST_TIMEOUT_MS,
 	);
 
+	// Skipped: tests upstream wake-source yield parking; the fork keeps terminal-yield-once in task/executor.ts.
+	it.skip(
+		"reads a worker-homed child's pending wake on main: set while its run streams, clear once it ends",
+		async () => {
+			const controller = new AbortController();
+			const running = runSubprocess(runOptions("Waker", HANG_TASK, { signal: controller.signal }));
+			await server.hung();
+			const session = AgentRegistry.global().get("Waker")?.session;
+			await waitFor(() => session?.hasPendingWake === true);
+			controller.abort(new Error("stop from main"));
+			await running;
+			await waitFor(() => session?.hasPendingWake === false);
+		},
+		TEST_TIMEOUT_MS,
+	);
+
 	it(
 		"aborts the worker run when main's signal aborts",
 		async () => {
@@ -518,7 +533,6 @@ describe("subagent runs routed into pooled workers", () => {
 				id: "Parked",
 				agent: AGENT,
 				message: "again",
-				structured: false,
 			});
 			expect(followUp.error).toBeUndefined();
 			expect(followUp.output).toBe("pong");
@@ -570,7 +584,7 @@ describe("subagent runs routed into pooled workers", () => {
 			const worker = pool.forThread(home);
 			if (!worker) throw new Error("home worker missing");
 
-			const turn = runSubagentFollowUpTurn({ id: "Crash", agent: AGENT, message: HANG_TASK, structured: false });
+			const turn = runSubagentFollowUpTurn({ id: "Crash", agent: AGENT, message: HANG_TASK });
 			await server.hung();
 			worker.terminate("worker crashed: boom");
 			const failed = await turn;
@@ -602,7 +616,6 @@ describe("subagent runs routed into pooled workers", () => {
 				id: "Crash",
 				agent: AGENT,
 				message: "again",
-				structured: false,
 			});
 			expect(again.output).toBe("pong");
 		},

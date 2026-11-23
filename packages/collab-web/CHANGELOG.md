@@ -2,9 +2,34 @@
 
 ## [Unreleased]
 
+## [19.1.0] - 2026-11-21
+
+### Added
+
+- Enhanced guest collaboration APIs: `GuestClient.sendPrompt` now supports sending images, while `sendResume`, `sendDeliverQueue`, and the `followUp` option enable continuing the host’s agent, interrupting it to deliver queued messages, or queueing a follow-up prompt.
+
+### Changed
+
+- Tool commands run inside a bash call render as nested cards under the bash card
+- Tool cards in shared sessions and HTML exports show brief intent labels instead of detailed ranking instructions.
+
+## [19.0.0] - 2026-11-18
+
 ### Fixed
 
-- Fixed a web guest going live with the agents, tool cards and working state from before a rejoin when the rejoin's welcome failed to apply; the guest now says hello again within the auto-rejoin budget ([#19182](https://github.com/can1357/oh-my-pi/pull/19182) by [@alphastorm](https://github.com/alphastorm))
+- Fixed web search cards without a synthesized answer displaying raw numbered result lists; they now show a concise excerpt for each source instead.
+
+## [18.22.0] - 2026-11-16
+
+### Fixed
+
+- Improved streaming performance in the collab viewer, preventing long replies from becoming progressively slower as they are received.
+
+## [18.20.1] - 2026-11-14
+
+### Fixed
+
+- Fixed guests retaining stale agents, tool cards, and working state after a failed rejoin; guests now reliably restore the current session state when reconnecting.
 
 ## [18.19.0] - 2026-11-12
 

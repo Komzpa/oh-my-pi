@@ -1,5 +1,5 @@
 import type { ToolTier } from "@oh-my-pi/pi-agent-core";
-import { extractUriScheme, parseInternalUrl } from "../internal-urls/parse";
+import { extractUriScheme } from "../internal-urls/parse";
 import { type LineRange } from "@oh-my-pi/pi-tui/tools/line-ranges";
 import { splitPathAndSel, isReadableUrlPath } from "@oh-my-pi/pi-tui/tools/read";
 import { toPathList } from "@oh-my-pi/pi-tui/render/render-utils";
@@ -10,7 +10,6 @@ import { glob } from "@oh-my-pi/pi-natives";
 import {
 	expandTilde,
 	hasFsCode,
-	withTimeout,
 	isEnoent,
 	isEnotdir,
 	isRecord,
@@ -19,14 +18,6 @@ import {
 	windowsPathToWslMount,
 } from "@oh-my-pi/pi-utils";
 import { InternalUrlRouter } from "../internal-urls";
-import { isLocallyOwnedSkillUrl } from "../internal-urls/skill-protocol";
-import {
-	hasExactMcpResource,
-	MCP_RESOURCE_DISCOVERY_TIMEOUT,
-	MCP_RESOURCE_DISCOVERY_WAIT_MS,
-} from "../internal-urls/mcp-protocol";
-import { MCPManager } from "../mcp/manager";
-import type { ResolveContext } from "../internal-urls/types";
 import { type InternalUrlFilesystem, joinUrlPath, UrlFsError } from "../internal-urls/url-filesystem";
 import { ToolAbortError } from "./tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
@@ -570,6 +561,18 @@ export function resolveSearchResultPath(base: string, rel: string): string {
 	return router.canHandle(base) ? joinUrlPath(base, rel) : path.resolve(base, rel);
 }
 
+/**
+ * Absolute path of a native result for one resolved search target.
+ * Directory results are walk-relative and join onto `basePath`. A file
+ * target's display path is only its name, so the file is `basePath` itself.
+ */
+export function resolveTargetResultPath(
+	target: { basePath: string; isDirectory: boolean },
+	displayPath: string,
+): string {
+	return target.isDirectory ? resolveSearchResultPath(target.basePath, displayPath) : target.basePath;
+}
+
 /** `target` relative to the host directory `base` with `/` separators; `target` itself when either is an internal URL. */
 export function relativeSearchResultPath(base: string, target: string): string {
 	const router = InternalUrlRouter.instance();
@@ -703,59 +706,6 @@ async function tryDelimitedPathSplit(
 }
 
 /**
- * Whether an internal-URL list has a URL with its own path segments followed by
- * an unanchored local part. A local part is anchored when
- * {@link isFilesystemSourcePath} (POSIX absolute, Windows drive, UNC) or an
- * explicit `./`, `../` (either separator), `~` prefix makes it its own target.
- * A delimiter following a query or fragment remains part of that URL.
- */
-function hasAmbiguousInternalUrlTail(parts: readonly string[], isUrl: (part: string) => boolean): boolean {
-	let urlHasPath = false;
-	// Path state from readable HTTPS/www URLs only matters once an internal or
-	// routed URL already opened the list: pure `https://host/x;local` lists must
-	// still fan out, while `skill://demo;https://host/a;b.md` must keep the
-	// HTTPS path's semicolon attached.
-	let seenInternalOrRoutedUrl = false;
-	for (const [index, part] of parts.entries()) {
-		if (isInternalUrlPath(part) || (isUrl(part) && !isReadableUrlPath(part))) {
-			seenInternalOrRoutedUrl = true;
-			const url = parseInternalUrl(
-				isInternalUrlPath(part) ? InternalUrlRouter.instance().normalize(expandPath(part)) : part,
-			);
-			// Any following delimiter is inside this URL’s query or fragment.
-			if (index < parts.length - 1 && (url.search || url.hash)) return true;
-			urlHasPath = urlHasPath || (url.pathname !== "" && url.pathname !== "/");
-			continue;
-		}
-		if (isReadableUrlPath(part)) {
-			if (seenInternalOrRoutedUrl) {
-				try {
-					const href = /^www\./i.test(part) ? `https://${part}` : part;
-					const url = new URL(href);
-					if (index < parts.length - 1 && (url.search || url.hash)) return true;
-					urlHasPath = urlHasPath || (url.pathname !== "" && url.pathname !== "/");
-				} catch {
-					// Malformed readable-URL spelling: treat as a non-path URL component.
-				}
-			}
-			continue;
-		}
-		// Expand first so tolerated colon-prefixed relatives (`:./b.md`, `:..\b`)
-		// use the same spelling the existence probe already accepted.
-		const localPart = normalizePosixPath(expandPath(part));
-		const anchored =
-			isFilesystemSourcePath(localPart) ||
-			localPart === "." ||
-			localPart === ".." ||
-			localPart.startsWith("./") ||
-			localPart.startsWith("../") ||
-			localPart.startsWith("~");
-		if (urlHasPath && !anchored) return true;
-	}
-	return false;
-}
-
-/**
  * Split one path-like entry whose multiple targets were flattened into one
  * string. Existing paths are kept intact, so real filenames containing spaces,
  * commas, or semicolons win over delimiter recovery.
@@ -763,6 +713,44 @@ function hasAmbiguousInternalUrlTail(parts: readonly string[], isUrl: (part: str
 /** A `!glob` exclusion part of a path list, which search tools take beside URLs. */
 function isExclusionPart(part: string): boolean {
 	return part.length > 1 && part.startsWith("!") && !part.includes("://");
+}
+
+const MISSING_OR_INVALID_URL_CODES = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG", "EINVAL"]);
+
+async function probeInternalUrlTarget(
+	url: string,
+	filesystem: InternalUrlFilesystem,
+	requireDirectory = false,
+): Promise<boolean> {
+	try {
+		const stat = await filesystem.stat(url);
+		// A missing JSON field stats as a file of the "null" sentinel. Readers keep
+		// that sentinel; only this probe treats it as not found.
+		if (stat.absent === true) return false;
+		return !requireDirectory || stat.type === "directory";
+	} catch (err) {
+		return !(err instanceof UrlFsError && MISSING_OR_INVALID_URL_CODES.has(err.code));
+	}
+}
+
+async function internalUrlEntryResolves(entry: string, filesystem: InternalUrlFilesystem): Promise<boolean> {
+	const router = InternalUrlRouter.instance();
+	const peeledUrl = router.split(expandPath(entry)).path;
+	if (router.isGlob(peeledUrl)) {
+		let parsedUrl: ParsedSearchPath | undefined;
+		try {
+			parsedUrl = parseUrlSearchPath(peeledUrl);
+		} catch {
+			return false;
+		}
+		if (parsedUrl?.glob !== undefined) {
+			const rawGlobTail = peeledUrl.slice(parsedUrl.basePath.length);
+			if (splitTopLevelDelimitedPath(rawGlobTail, "semicolon").length === 1) {
+				return probeInternalUrlTarget(parsedUrl.basePath, filesystem, true);
+			}
+		}
+	}
+	return probeInternalUrlTarget(peeledUrl, filesystem);
 }
 
 export async function splitDelimitedPathEntry(
@@ -774,42 +762,52 @@ export async function splitDelimitedPathEntry(
 		/** Let `!glob` exclusion parts sit beside URLs in a `;` list (grep's path syntax). */
 		exclusionParts?: boolean;
 		/**
-		 * Split a `;` list that starts with an internal URL and also names existing
-		 * local paths (`artifact://1;notes.txt`). Search tools opt in. Rewrite tools
-		 * leave this off so a `;` inside one internal URL cannot select an extra file.
+		 * Filesystem that probes a `;` list starting with an internal URL and also
+		 * naming local paths or globs (`local://1.log;src/*.ts`). Search tools pass
+		 * the filesystem they search with. Omit it so a `;` inside one internal
+		 * URL cannot select an extra file.
 		 */
-		mixedLocalPaths?: boolean;
-		/** Calling session context for file-backed internal URLs. */
-		context?: ResolveContext;
+		mixedLocalPaths?: InternalUrlFilesystem;
 	} = {},
 ): Promise<string[] | null> {
 	const normalizedEntry = normalizePathLikeInput(entry);
 	if (!hasTopLevelPathDelimiter(normalizedEntry)) return null;
 	const splitter = options.splitter ?? parseSearchPath;
 	if (options.routedUrlPredicate?.(normalizedEntry)) {
-		// Every routed URL, including a native MCP scheme, uses the same
-		// literal/exact-resource precedence as initial mixed-list recovery.
-		return splitMixedUrlPathList(
-			normalizedEntry,
-			cwd,
-			options.routedUrlPredicate,
-			options.context,
-			options.exclusionParts,
-		);
+		const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, splitter, "semicolon", "none");
+		const routed = options.routedUrlPredicate;
+		return parts?.every(part => routed(part) || (options.exclusionParts === true && isExclusionPart(part)))
+			? parts
+			: null;
+	}
+	if (options.mixedLocalPaths !== undefined && isInternalUrlPath(normalizedEntry)) {
+		// Before the all-internal branch, which keeps the whole string when any
+		// part is not itself an internal URL. All-URL lists always split. For a
+		// mixed list, probe the range-free URL (or its non-glob base directory)
+		// and split only on confirmed missing or invalid targets so semicolons
+		// inside real URLs and read/permission/size errors stay intact.
+		const isUrlPart = (part: string): boolean =>
+			isInternalUrlPath(part) || (options.exclusionParts === true && isExclusionPart(part));
+		const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, splitter, "semicolon", "none");
+		if (!parts || parts.length <= 1) return null;
+		if (parts.every(isUrlPart)) return parts;
+		// No resolve cache: a URL that does resolve is read again during the search.
+		// Only mixed `;` lists pay that second read, including ssh:// and mcp://.
+		return (await internalUrlEntryResolves(normalizedEntry, options.mixedLocalPaths)) ? null : parts;
 	}
 	if (isInternalUrlPath(normalizedEntry)) {
-		// Search tools opt into mixed local targets. Rewrite callers retain the
-		// upstream all-internal boundary so a URL suffix cannot select a cwd file.
+		// A `;` list of internal URLs (`local://44.log;local://43.log`) names
+		// several resources: the router resolves one URI per entry, so the list
+		// must split before dispatch (issue #14091). Split only when every part
+		// is itself an internal URL or a `!glob` exclusion (`local://notes;!*.test.ts`)
+		// — a URL whose own path contains `;` stays whole, and a single URL ending
+		// in `;` (`local://report;`) names one resource.
 		const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, splitter, "semicolon", "none");
-		if (
-			!parts ||
-			(options.mixedLocalPaths !== true &&
-				parts.some(part => !isInternalUrlPath(part) && !(options.exclusionParts === true && isExclusionPart(part))))
-		)
-			return null;
-		// Apply the same literal-resource, query/fragment and MCP precedence to
-		// both mixed search lists and lists containing only internal URLs.
-		return splitMixedUrlPathList(normalizedEntry, cwd, isInternalUrlPath, options.context, options.exclusionParts);
+		return parts &&
+			parts.length > 1 &&
+			parts.every(part => isInternalUrlPath(part) || (options.exclusionParts === true && isExclusionPart(part)))
+			? parts
+			: null;
 	}
 	// A real POSIX file may contain a delimiter and a selector-shaped tail
 	// (`a;b:1-2`, `a b:1-2`). Preserve the raw entry whenever the full literal
@@ -837,40 +835,6 @@ export async function splitDelimitedPathEntry(
 	);
 }
 
-/** Whether the complete internal URL locates an existing local target. */
-async function internalUrlLocatesExisting(entry: string, cwd: string, context?: ResolveContext): Promise<boolean> {
-	try {
-		return (await InternalUrlRouter.instance().locate(entry, { cwd, ...context })) !== null;
-	} catch {
-		return false;
-	}
-}
-
-async function internalUrlIsExactMcpResource(entry: string, signal?: AbortSignal): Promise<boolean> {
-	// Registered schemes other than skill:// and mcp:// cannot fall back to
-	// MCP. Native unregistered MCP schemes can, but ordinary readable URLs and
-	// file URLs must never wait on unrelated MCP discovery.
-	const { path: barePath } = InternalUrlRouter.instance().split(entry);
-	const scheme = extractUriScheme(barePath);
-	if (!scheme) return false;
-	if (
-		scheme !== "skill" &&
-		scheme !== "mcp" &&
-		(isInternalUrlPath(barePath) || isReadableUrlPath(barePath) || scheme === "file")
-	)
-		return false;
-	if (!MCPManager.available()) return false;
-	const deadline = Date.now() + MCP_RESOURCE_DISCOVERY_WAIT_MS;
-	const manager = await withTimeout(
-		MCPManager.load(),
-		MCP_RESOURCE_DISCOVERY_WAIT_MS,
-		MCP_RESOURCE_DISCOVERY_TIMEOUT,
-		signal,
-	);
-	if (!manager) return false;
-	return hasExactMcpResource(manager, parseInternalUrl(barePath), signal, Math.max(0, deadline - Date.now()));
-}
-
 /**
  * Split a `;` list that names URLs alongside local paths
  * (`https://x;src/a.ts:1-20`, `omp://;Makefile:1-3`). Engages only when URL
@@ -884,52 +848,23 @@ export async function splitMixedUrlPathList(
 	entry: string,
 	cwd: string,
 	isUrl: (part: string) => boolean,
-	context?: ResolveContext,
-	exclusionParts = false,
 ): Promise<string[] | null> {
 	const normalizedEntry = normalizePathLikeInput(entry);
 	if (!normalizedEntry.includes(";") || !isUrl(normalizedEntry)) return null;
-	// Structural and literal-part checks run before any locate or MCP discovery wait,
-	// so a non-list input such as `omp://?q=a;b` never blocks on an unrelated pending server.
-	const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, parseSearchPath, "semicolon", "none");
-	if (!parts || parts.length < 2) return null;
-	for (const part of parts) {
-		if (isUrl(part) || isReadableUrlPath(part) || (exclusionParts && isExclusionPart(part))) continue;
-		const partPath = (await splitPathAndSelPreferringLiteral(part, cwd)).path;
-		if (hasGlobPathChars(partPath) || (await probeLiteralPathExists(partPath, cwd)) !== "exists") return null;
-	}
-	if (
-		hasAmbiguousInternalUrlTail(
-			parts.filter(part => !(exclusionParts && isExclusionPart(part))),
-			isUrl,
-		)
-	)
-		return null;
-	if (isInternalUrlPath(normalizedEntry)) {
-		// Existing file-backed resources keep literal precedence over list recovery.
-		if (await internalUrlLocatesExisting(normalizedEntry, cwd, context)) return null;
-	} else {
+	if (!isInternalUrlPath(normalizedEntry)) {
 		if ((await probeLiteralPathExists(normalizedEntry, cwd)) !== "missing") return null;
 		const selectorSplit = splitPathAndSel(normalizedEntry);
 		if (selectorSplit.sel !== undefined && (await probeLiteralPathExists(selectorSplit.path, cwd)) !== "missing") {
 			return null;
 		}
 	}
-	// Local skill ownership wins without starting MCP for a list made entirely of local skills.
-	const router = InternalUrlRouter.instance();
-	const skillParts = parts.map(part => router.normalize(expandPath(part)));
-	if (
-		skillParts.every(part => extractUriScheme(part) === "skill") &&
-		(
-			await Promise.all(
-				skillParts.map(part => isLocallyOwnedSkillUrl(parseInternalUrl(router.split(part).path), context)),
-			)
-		).every(Boolean)
-	)
-		return parts;
-	// Native fallback schemes have the same exact advertised identity as
-	// skill:// and mcp:// resources, including through routed read retries.
-	if (await internalUrlIsExactMcpResource(normalizedEntry, context?.signal)) return null;
+	const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, parseSearchPath, "semicolon", "none");
+	if (!parts) return null;
+	for (const part of parts) {
+		if (isUrl(part)) continue;
+		const partPath = splitPathAndSel(part).path;
+		if (hasGlobPathChars(partPath) || (await probeLiteralPathExists(partPath, cwd)) !== "exists") return null;
+	}
 	return parts;
 }
 
@@ -939,9 +874,8 @@ export async function expandDelimitedPathEntries(
 	cwd: string,
 	options: {
 		splitter?: PathEntrySplitter;
-		context?: ResolveContext;
 		exclusionParts?: boolean;
-		mixedLocalPaths?: boolean;
+		mixedLocalPaths?: InternalUrlFilesystem;
 	} = {},
 ): Promise<string[]> {
 	const expanded: string[] = [];
@@ -971,6 +905,8 @@ export interface ResolvedSearchTarget {
 	basePath: string;
 	glob?: string;
 	bareGlob?: boolean;
+	/** `basePath` is a directory. A file target's native display path is only its name. */
+	isDirectory: boolean;
 }
 
 export interface ResolvedMultiSearchPath {
@@ -1263,6 +1199,7 @@ async function resolveSearchPathItems(
 					basePath: item.absoluteBasePath,
 					glob: item.parsedPath.glob ? combineSearchGlobs(item.parsedPath.glob, suffixGlob) : suffixGlob,
 					bareGlob: isBareSearchGlob(item.raw, item.parsedPath),
+					isDirectory: item.type === "directory",
 				}))
 			: undefined;
 
@@ -1561,8 +1498,6 @@ export interface ToolScopeOptions {
 	fanOutFileTargets?: boolean;
 	/** Extra hint appended to "Path not found" when stat fails and the user supplied multiple paths. */
 	multipathStatHint?: string;
-	/** Calling session context for file-backed internal URLs during list recovery. */
-	context?: ResolveContext;
 	/** Materialize readable external URLs to local text files before scope derivation. */
 	resolveExternalUrl?: (rawPath: string) => Promise<ResolvedExternalSearchUrl | undefined>;
 }
@@ -1602,12 +1537,12 @@ export function searchPathTier(args: unknown): ToolTier {
  *  5. stat the resolved base path through `filesystem` so callers can branch on directory vs file scope.
  */
 export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<ToolScopeResolution> {
-	const { rawPaths: inputs, cwd, internalUrlAction, context } = opts;
+	const { rawPaths: inputs, cwd, internalUrlAction } = opts;
 	const normalizedRawPaths = inputs.map(normalizePathLikeInput);
 	if (normalizedRawPaths.some(rawPath => rawPath.length === 0)) {
 		throw new ToolError("Search scope entries must be non-empty paths or globs");
 	}
-	const rawPaths = await expandDelimitedPathEntries(normalizedRawPaths, cwd, { context });
+	const rawPaths = await expandDelimitedPathEntries(normalizedRawPaths, cwd);
 	if (rawPaths.some(rawPath => rawPath.length === 0)) {
 		throw new ToolError("Search scope entries must be non-empty paths or globs");
 	}
@@ -1711,7 +1646,7 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 	try {
 		isDirectory = (await opts.filesystem.stat(searchPath)).type === "directory";
 	} catch (error) {
-		// A URL failure carries its handler's diagnosis (`Artifact 9 not found. Available: 4`).
+		// A URL failure carries its handler's diagnosis (`Not found: reviewer_9`).
 		if (internalRouter.canHandle(searchPath)) {
 			throw new ToolError(
 				`Cannot ${internalUrlAction} ${searchPath}: ${error instanceof Error ? error.message : String(error)}`,

@@ -87,7 +87,7 @@ const CALLS: Record<string, Call> = {
   upstreamLook: { name: "bash", arguments: { command: "git -C /tmp/other fetch -q upstream && git -C /tmp/other log --oneline -25 upstream/main" } },
   read: { name: "read", arguments: { path: "README.md" } },
   wait: { name: "wait", arguments: {} },
-  complain: { name: "write", arguments: { path: "xd://report_issue", content: "task: gate keeps refusing" } },
+  complain: { name: "report_issue", arguments: { report: "task: gate keeps refusing" } },
   messageWorker: { name: "write", arguments: { path: "agent://RowBOwner", content: "use the pinned head" } },
 };
 const PROGRESS = ["todoSchedule", "todoDone", "taskRow", "taskResume", "taskCommit", "gitCommit", "gitPush", "bashTest"];
@@ -2634,8 +2634,10 @@ for (const path of ["agent://RunningWorker", "agent://IdleWorker", "agent://Park
   });
 }
 test("deadline correction is admitted through dispatch gates", () => {
-  expect(decideGateCall({ name: "write", arguments: { path: "xd://goal_deadline", content: "{}" } }, [armedMissedEta]).allowed).toBe(true);
-  expect(decideGateCall({ name: "write", arguments: { path: "xd://goal_deadline-other", content: "{}" } }, [armedMissedEta]).allowed).toBe(false);
+  expect(decideGateCall({ name: "bash", arguments: { command: "goal_deadline '{\"action\":\"status\"}'" } }, [armedMissedEta]).allowed).toBe(true);
+  expect(decideGateCall({ name: "bash", arguments: { command: "goal_deadline_other '{}'" } }, [armedMissedEta]).allowed).toBe(false);
+  expect(decideGateCall({ name: "bash", arguments: { command: "goal_deadline '{}'; rm -rf build" } }, [armedMissedEta]).allowed).toBe(false);
+  expect(decideGateCall({ name: "bash", arguments: { command: "goal_deadline $(cat x)" } }, [armedMissedEta]).allowed).toBe(false);
 });
 test("armed missed-eta admits context_notes but refuses bash", () => {
   expect(decideGateCall({ name: "context_notes", arguments: { text: "check-in" } }, [armedMissedEta]).allowed).toBe(true);

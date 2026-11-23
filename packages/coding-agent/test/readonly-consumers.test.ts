@@ -25,8 +25,8 @@ let cwd: string;
 let registry: ModelRegistry;
 const sessions: AgentSession[] = [];
 
-function settings(xdev = false): Settings {
-	return Settings.isolated({ "tools.xdev": xdev, "plan.enabled": false });
+function settings(): Settings {
+	return Settings.isolated({ "plan.enabled": false });
 }
 
 function options(extra: Partial<CreateAgentSessionOptions> = {}): CreateAgentSessionOptions {
@@ -112,56 +112,6 @@ afterEach(async () => {
 });
 
 describe("readonly native transport real consumers", () => {
-	it("disables the actual agent route at depth zero while preserving mounted xd dispatch, then restores replies", async () => {
-		const target = await recipient();
-		const state = settings(true);
-		cfgTaskMaxRecursionDepth.set(state, 2);
-		let deviceCalls = 0;
-		const device: ExtensionFactory = pi => {
-			pi.registerTool({
-				name: "readonly_probe",
-				label: "Probe",
-				description: "Read-only mounted probe",
-				parameters: type({}),
-				async execute() {
-					deviceCalls++;
-					return { content: [{ type: "text", text: "device reached" }] };
-				},
-			});
-		};
-		const session = await create({
-			agentId: "LiveReadonly",
-			settings: state,
-			toolNames: ["read", "grep"],
-			extensions: [device],
-		});
-		await reply(session, target, "before-disable");
-		await session.setActiveToolsByName(["read", "grep", "readonly_probe"]);
-		await session.refreshMCPTools([]);
-		await reply(session, target, "after-ordinary-reconcile");
-		await denyDisk(session, "ordinary.txt");
-		cfgTaskMaxRecursionDepth.set(state, 0);
-		await session.reconcileBuiltinTools({ refreshPrompt: false });
-		expect(session.getActiveToolNames()).toContain("write");
-		await expect(
-			session.getToolByName("write")!.execute("disabled", {
-				path: "agent://ConsumerRecipient",
-				content: "must not arrive",
-			}),
-		).rejects.toThrow("Peer messaging is unavailable");
-		expect(incoming(target)).not.toContain("must not arrive");
-		const deviceResult = await session
-			.getToolByName("write")!
-			.execute("mounted", { path: "xd://readonly_probe", content: "{}" });
-		expect(deviceResult).not.toMatchObject({ isError: true });
-		expect(deviceCalls).toBe(1);
-		await denyDisk(session, "disabled.txt");
-		cfgTaskMaxRecursionDepth.set(state, 2);
-		await session.reconcileBuiltinTools({ refreshPrompt: false });
-		await reply(session, target, "after-restore");
-		await denyDisk(session, "restored.txt");
-	});
-
 	it("removes the synthetic transport without xd mounts and never advertises a dead startup route", async () => {
 		const state = settings();
 		const session = await create({ agentId: "UnmountedReadonly", settings: state, toolNames: ["read", "grep"] });
@@ -396,7 +346,6 @@ describe("readonly native transport real consumers", () => {
 				enableIrc,
 				enableLsp: false,
 				enableMCP: false,
-				structured: false,
 				keepAlive: false,
 				skills: [],
 				contextFiles: [],

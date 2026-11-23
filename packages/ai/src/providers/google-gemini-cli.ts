@@ -1,7 +1,6 @@
 /**
- * Google Gemini CLI / Antigravity provider.
- * Shared implementation for both google-gemini-cli and google-antigravity providers.
- * Uses the Cloud Code Assist API endpoint to access Gemini and Claude models.
+ * Cloud Code Assist transport for Antigravity and custom providers.
+ * The `google-gemini-cli` API identifier is retained for configured models.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { scheduler } from "node:timers/promises";
@@ -12,7 +11,6 @@ import {
 	ensureAntigravityVersion,
 	getAntigravityHeaders,
 	getAntigravityModelWireProfile,
-	getGeminiCliHeaders,
 } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
 import { extractHttpStatusFromError, fetchWithRetry, readSseJson, type SseEventObserver } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
@@ -34,6 +32,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream";
 import { extractGoogleValidationUrl, formatGoogleValidationRequiredMessage } from "../utils/google-validation";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
 import { armPreResponseTimeout, getStreamFirstEventTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
+import { notifyProviderResponse } from "../utils/provider-response";
 // Refresh is the sole responsibility of AuthStorage (broker-aware, single-flighted);
 // the stream provider trusts the access token threaded through `options.apiKey`.
 import { normalizeSchemaForCCA } from "../utils/schema";
@@ -47,6 +46,7 @@ import {
 	CONTINUATION_MAX_ATTEMPTS,
 	EMPTY_STREAM_BASE_DELAY_MS,
 	followGoogleContinuations,
+	googleStreamRequestId,
 	GoogleTextBlocks,
 	type GoogleThinkingLevel,
 	hasMeaningfulGoogleContent,
@@ -613,9 +613,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			const requestHeaders = {
 				Authorization: `Bearer ${accessToken}`,
 				"Content-Type": "application/json",
-				...(isAntigravity
-					? getAntigravityHeaders()
-					: { Accept: "text/event-stream", ...getGeminiCliHeaders(model.id) }),
+				...(isAntigravity ? getAntigravityHeaders() : { Accept: "text/event-stream" }),
 				...(model.compat.claudeThinkingBetaHeader && model.identity.class === "anthropic" && model.reasoning
 					? { "anthropic-beta": CLAUDE_THINKING_BETA_HEADER }
 					: {}),
@@ -678,6 +676,9 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				activeResponse: Response,
 				streamUrl: string,
 			): Promise<{ meaningful: boolean; strippedPlanningLeak: boolean }> => {
+				// Headers already passed the status check. Tell observers before the body
+				// is read; the pre-response watchdog was cleared by the caller.
+				await notifyProviderResponse(options, activeResponse, model, googleStreamRequestId(activeResponse));
 				if (!activeResponse.body) {
 					throw new AIError.ProviderResponseError("No response body", {
 						provider: model.provider,
@@ -794,6 +795,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 					} finally {
 						clearWatchdog?.();
 					}
+					await notifyProviderResponse(options, resumed, model, googleStreamRequestId(resumed));
 					return readSseJson<CloudCodeAssistResponseChunk>(resumed.body, responseSignal, sseObserver);
 				};
 				const chunks = iterateWithIdleTimeout(

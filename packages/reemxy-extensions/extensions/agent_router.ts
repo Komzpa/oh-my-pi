@@ -310,7 +310,7 @@ async function fileToolRefusal(event: { toolName?: unknown; input?: unknown }, c
 
 async function truncatingWriteRefusal(requestedPath: string, input: Record<string, unknown>, ctx: ExtensionContext) {
 	// R3: the empty-content and shrink guard protects real files only. Internal control URIs
-	// (proc://, agent://, xd://, any non-file scheme) are not files, so `write proc://<id>/kill`
+	// (proc://, agent://, any non-file scheme) are not files, so `write proc://<id>/kill`
 	// with empty or omitted content always passes. A single-letter "scheme" is a Windows drive.
 	if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(requestedPath) && !/^[A-Za-z]:[\\/]/.test(requestedPath)) return undefined;
 	const target = canonicalPath(

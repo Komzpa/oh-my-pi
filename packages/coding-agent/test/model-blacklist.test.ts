@@ -494,7 +494,7 @@ for (const { scenario, contract } of [
 					: scenario === "auth fallback"
 						? allowedSelector
 						: "@task",
-			modelPatternAuthFallback: scenario === "auth fallback" ? bannedSelector : undefined,
+			modelPatternParentFallback: scenario === "auth fallback" ? bannedSelector : undefined,
 		});
 		if (scenario === "explicit concrete") {
 			await expect(creation).rejects.toThrow("fixture safety ban");

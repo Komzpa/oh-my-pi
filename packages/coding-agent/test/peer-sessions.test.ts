@@ -755,7 +755,7 @@ describe("peer sessions", () => {
 	});
 	it("peer /mcp reload connects and exposes an actual tool rather than refreshing command metadata", async () => {
 		const dir = await tempDir();
-		const manager = new MCPManager(dir, null, async () => ({
+		const manager = new MCPManager(dir, async () => ({
 			configs: {
 				fixture: {
 					type: "stdio",
@@ -862,7 +862,7 @@ describe("peer sessions", () => {
 		const dir = await tempDir();
 		const started = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const manager = new MCPManager(dir, null, async (): Promise<LoadMCPConfigsResult> => {
+		const manager = new MCPManager(dir, async (): Promise<LoadMCPConfigsResult> => {
 			started.resolve();
 			await release.promise;
 			return {
@@ -910,7 +910,7 @@ describe("peer sessions", () => {
 			command: process.execPath,
 			args: [path.join(import.meta.dir, "fixtures/many-tools-mcp.ts")],
 		};
-		const manager = new MCPManager(dir, null, async (): Promise<LoadMCPConfigsResult> => {
+		const manager = new MCPManager(dir, async (): Promise<LoadMCPConfigsResult> => {
 			if (++loads === 1) {
 				started.resolve();
 				await release.promise;

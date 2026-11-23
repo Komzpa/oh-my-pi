@@ -1,7 +1,7 @@
 /**
  * Bash command execution with streaming support and cancellation.
  *
- * Uses the embedded bash engine (pi-shell) through native bindings for shell
+ * Uses the embedded bash engine through native bindings for shell
  * execution.
  */
 import type { ImageContent } from "@oh-my-pi/pi-ai";
@@ -11,16 +11,19 @@ import {
 	PtySession,
 	RunTrace,
 	Shell,
+	type ShellCommands,
 	type ShellFilesystem,
 	type ShellRunResult,
+	type ShellSpeech,
 } from "@oh-my-pi/pi-natives";
 import { isShellTrace, type ShellTrace } from "@oh-my-pi/pi-wire";
 import { logger } from "@oh-my-pi/pi-utils";
+import { formatRawOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { $env } from "@oh-my-pi/pi-utils/env";
 import { isCmdShell, isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings } from "../config/settings";
 import type { MinimizedMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
-import { OutputSink, type OutputSummary } from "@oh-my-pi/pi-tui/tools/streaming-output";
+import { type ArtifactAllocator, OutputSink, type OutputSummary } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { attachShellTrace } from "@oh-my-pi/pi-tui/tools/shell-viz";
 import {
 	resolveOutputMaxColumns,
@@ -29,7 +32,9 @@ import {
 } from "../tools/output-meta";
 import { quotePosixArgv } from "../utils/shell-quote";
 import { getOrCreateSnapshot } from "../utils/shell-snapshot";
+import { StreamNewlineNormalizer } from "../utils/stream-newlines";
 import { TerminalGraphicsDecoder } from "../utils/terminal-graphics";
+import { appendImageLinks } from "../utils/image-temp";
 import { loadDirenvEnv } from "./direnv";
 import { buildNonInteractiveEnv } from "./non-interactive-env";
 import { DESKTOP_SESSION_ENV_KEYS, ensureSubagentRuntimeDir, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
@@ -60,6 +65,11 @@ export interface BashExecutorOptions {
 	sessionKey?: string;
 	/** Transcript session owning local processes, independent of the shell/job key. */
 	sessionId?: string;
+	/**
+	 * Session key whose persistent shell a new shell for `sessionKey` starts as a copy of
+	 * (variables, functions, aliases, options); what the run sets stays in the copy.
+	 */
+	seedSessionKey?: string;
 	/** Additional environment variables to inject */
 	env?: Record<string, string>;
 	/** Strip desktop-session bindings for task workers. */
@@ -80,13 +90,17 @@ export interface BashExecutorOptions {
 	 * `cwd` included). External shells and processes never see it.
 	 */
 	filesystem?: ShellFilesystem;
+	/** Speech synthesizer the embedded shell's `say` speaks through when the session has one set up. */
+	speech?: ShellSpeech;
+	/** Session tool commands the embedded shell resolves during this run. Other shells never see them. */
+	commands?: ShellCommands;
 	/**
 	 * Receives a copy of every byte crossing the command's pipes in the
 	 * embedded shell (`proc://<id>/streams`). The user-shell paths ignore it.
 	 */
 	streams?: PipeStreams;
 	/**
-	 * Receives the embedded shell's live trace of the command (pi-shell's
+	 * Receives the embedded shell's live trace of the command (omp-shell's
 	 * `RunTrace` snapshot) every {@link TRACE_POLL_MS} while it changed, and
 	 * once more after the run settles. The PTY path never calls it.
 	 */
@@ -98,13 +112,6 @@ export interface BashExecutorOptions {
 	 */
 	onStart?: (pids: () => readonly number[]) => void;
 	/**
-	 * Invoked before the run when the session's persistent shell is busy with
-	 * another command, so this one runs in a fork of it instead: it sees the
-	 * session's shell state as of before that command, and the state it sets
-	 * is discarded.
-	 */
-	onSessionShellBusy?: () => void;
-	/**
 	 * Asked once the run settles: `false` means the agent session that owns
 	 * `sessionKey` was left (new, fork, switch, branch) while the command ran,
 	 * so the persistent shell it used is dropped instead of kept for a next call.
@@ -115,14 +122,13 @@ export interface BashExecutorOptions {
 	 * experiment shapes the output instead. Default: the setting decides.
 	 */
 	minimize?: boolean;
-	/** Artifact path/id for full output storage */
-	artifactPath?: string;
-	artifactId?: string;
+	/** Claims the spill file for output that overflows the inline view. */
+	allocateArtifact?: ArtifactAllocator;
 	/**
 	 * Invoked when the native minimizer rewrote the command's output, giving
 	 * the caller a chance to persist the lossless original capture (typically
-	 * via the session's `ArtifactManager`). The returned id is spliced into
-	 * the sink output as `artifact://<id>` so the agent can retrieve the raw
+	 * via the session's `ArtifactManager`). The returned spill id is spliced
+	 * into the sink output as its spill URL so the agent can retrieve the raw
 	 * bytes. Return `undefined` to skip the footer.
 	 */
 	onMinimizedSave?: (
@@ -157,6 +163,24 @@ export interface BashResult extends OutputSummary {
 	workingDir?: string;
 	/** Terminal graphics extracted from raw stdout before sanitization or truncation. */
 	images?: ImageContent[];
+	/**
+	 * Set when the command overlapped another one on the session's persistent
+	 * shell and so ran in a fork of it, which saw the shell's state as of before
+	 * that command.
+	 */
+	fork?: ShellForkOutcome;
+}
+
+/** How a command that ran in a fork of the busy persistent shell ({@link BashResult.fork}) left the session. */
+export interface ShellForkOutcome {
+	/**
+	 * What it set (variables, functions, aliases, options, traps) carried back into
+	 * the session's shell, a name both set keeping the value of the command that
+	 * ended last; `false`: it stayed in the fork.
+	 */
+	carried: boolean;
+	/** It left background jobs running in the fork, where later commands' `jobs`, `wait` and `%N` miss them. */
+	jobs: boolean;
 }
 
 /** POSIX-safe variable name — gates which direnv unsets we inject into the
@@ -172,13 +196,18 @@ const TRACE_POLL_MS = 80;
 
 /**
  * Polls `trace` every {@link TRACE_POLL_MS} while the run is in flight and
- * forwards each changed snapshot; `stop()` takes the final one.
+ * forwards each changed snapshot, bound to the run (and its `streams`, so
+ * a card can show what a step writes there); `stop()` takes the final one.
  *
  * An invalid snapshot is logged once and skipped: the poll runs from a timer,
  * where a throw would escape as an uncaught exception and end the session,
  * and the trace is only a visualization of the run.
  */
-function pollRunTrace(trace: RunTrace, onTrace: (trace: ShellTrace) => void): { stop: () => ShellTrace | undefined } {
+function pollRunTrace(
+	trace: RunTrace,
+	streams: PipeStreams | undefined,
+	onTrace: (trace: ShellTrace) => void,
+): { stop: () => ShellTrace | undefined } {
 	let last = -1;
 	let latest: ShellTrace | undefined;
 	let warned = false;
@@ -193,7 +222,7 @@ function pollRunTrace(trace: RunTrace, onTrace: (trace: ShellTrace) => void): { 
 			return;
 		}
 		latest = snapshot;
-		attachShellTrace(latest, trace);
+		attachShellTrace(latest, trace, streams);
 		onTrace(latest);
 	};
 	const timer = setInterval(poll, TRACE_POLL_MS);
@@ -337,14 +366,15 @@ export async function drainAbortedShells(agentSessionKey: string | undefined): P
 	await Promise.all(pending);
 }
 
-async function retainShellWithLiveBackgroundJobs(shell: Shell): Promise<void> {
+/** Keeps `shell` alive while it has live background jobs; whether it had any. */
+async function retainShellWithLiveBackgroundJobs(shell: Shell): Promise<boolean> {
 	let live: number;
 	try {
 		live = await shell.liveBackgroundJobCount();
 	} catch {
-		return;
+		return false;
 	}
-	if (live <= 0) return;
+	if (live <= 0) return false;
 	retainedShells.add(shell);
 	const interval = setInterval(() => {
 		void shell
@@ -360,6 +390,7 @@ async function retainShellWithLiveBackgroundJobs(shell: Shell): Promise<void> {
 			});
 	}, RETAIN_REAP_INTERVAL_MS);
 	interval.unref?.();
+	return true;
 }
 
 /**
@@ -652,6 +683,7 @@ async function executeUserShellPty(run: {
 	dump: (notice?: string) => Promise<OutputSummary & { images?: ImageContent[] }>;
 }): Promise<BashResult> {
 	const session = new PtySession();
+	const newlines = new StreamNewlineNormalizer();
 	const result = await session.startArgv(
 		{
 			application: run.shell,
@@ -669,7 +701,7 @@ async function executeUserShellPty(run: {
 			// Preserve raw bytes for the terminal display, but extract graphics
 			// before the transcript sink sanitizes or truncates the clean text.
 			const clean = run.graphics.push(chunk);
-			if (clean) run.sink.push(clean.replace(/\r\n?/gu, "\n"));
+			if (clean) run.sink.push(newlines.push(clean));
 		},
 		err => {
 			if (err) return;
@@ -784,8 +816,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 						onPreview?.(sink.preview());
 					}
 				: undefined,
-		artifactPath: options?.artifactPath,
-		artifactId: options?.artifactId,
+		allocateArtifact: options?.allocateArtifact,
 		headBytes: resolveOutputSinkHeadBytes(settings),
 		artifactMaxBytes: resolveOutputSinkArtifactMaxBytes(settings),
 		maxColumns: resolveOutputMaxColumns(settings),
@@ -810,8 +841,11 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			if (tail) sink.push(tail);
 			decodedImages = await graphics.images();
 		}
+		const summary = await sink.dump(notice);
+		const output = await appendImageLinks(summary.output, decodedImages);
 		return {
-			...(await sink.dump(notice)),
+			...summary,
+			output,
 			...(decodedImages.length > 0 ? { images: decodedImages } : {}),
 		};
 	};
@@ -862,12 +896,19 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	// mutex-guarded queue and `abort()` kills every in-flight run on it). When
 	// parallel bash calls overlap on the same key, the first one owns the
 	// persistent session; the rest run in one-shot forks of it, which start
-	// from the session's state before the owner's command. A cancelled command
-	// keeps owning the session until its native run settles.
+	// from the session's state before the owner's command and carry what they
+	// set back into it once they end. A cancelled command keeps owning the
+	// session until its native run settles.
 	const sessionBusy = shellSessionsInUse.has(sessionKey);
 	let shellSession = sessionBusy ? undefined : shellSessions.get(sessionKey);
 	if (!shellSession && !sessionBusy) {
-		shellSession = new Shell(shellOptions);
+		const seed =
+			options?.seedSessionKey === undefined
+				? undefined
+				: shellSessions.get(
+						buildSessionKey(shell, prefix, snapshotPath, sessionEnv, options.seedSessionKey, minimizer),
+					);
+		shellSession = seed?.fork() ?? new Shell(shellOptions);
 		shellSessions.set(sessionKey, shellSession);
 	}
 	const busyShell = sessionBusy ? shellSessions.get(sessionKey) : undefined;
@@ -875,7 +916,14 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 	if (shellSession) {
 		shellSessionsInUse.add(sessionKey);
 	}
-	if (sessionBusy) options?.onSessionShellBusy?.();
+	// A fork's run settled: carry what it set into the session's shell, and keep
+	// the fork alive while background jobs it started run (dropping it kills them).
+	const settleFork = async (): Promise<{ fork?: ShellForkOutcome }> => {
+		if (!sessionBusy) return {};
+		const carried = busyShell?.adopt(executionShell) ?? false;
+		const jobs = await retainShellWithLiveBackgroundJobs(executionShell);
+		return { fork: { carried, jobs } };
+	};
 	const userSignal = options?.signal;
 	const runAbortController = new AbortController();
 	let abortCleanupPromise: Promise<void> | undefined;
@@ -908,22 +956,34 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		const fallbackTimeoutMs = nativeOwnsTimeout
 			? deadlineTimeoutMs + NATIVE_TIMEOUT_FALLBACK_GRACE_MS
 			: deadlineTimeoutMs;
-		timeoutTimer = setTimeout(() => {
-			// Explicit timeouts are enforced inside pi-natives via `timeoutMs`.
+		const fallbackAt = performance.now() + fallbackTimeoutMs;
+		const onDeadline = (): void => {
+			// A timer can fire early by the clock the deadline and wall time use: after the
+			// host slept, timers count the sleep while the native deadline does not. Wait out
+			// the rest, or a running command is reported timed out (and the backend hung)
+			// with wall time well under its deadline.
+			const remainingMs = fallbackAt - performance.now();
+			if (remainingMs > 0) {
+				timeoutTimer = setTimeout(onDeadline, remainingMs);
+				return;
+			}
+			// Explicit timeouts are enforced inside omp-natives via `timeoutMs`.
 			// Give native cancellation time to flush pipeline output and drain the
 			// N-API bridge before this result-only watchdog gives up on the run.
 			if (!nativeOwnsTimeout) {
 				abortCurrentExecution();
 			}
 			timeoutDeferred.resolve("timeout");
-		}, fallbackTimeoutMs);
+		};
+		timeoutTimer = setTimeout(onDeadline, fallbackTimeoutMs);
 	}
 
 	let resetSession = false;
 	// Set when the command returns before its native run settled.
 	let unsettled: { run: Promise<ShellRunResult>; cleanup: Promise<void> } | undefined;
 	const runTrace = options?.onTrace ? new RunTrace(finalCommand) : undefined;
-	const tracePoll = runTrace && options?.onTrace ? pollRunTrace(runTrace, options.onTrace) : undefined;
+	const tracePoll =
+		runTrace && options?.onTrace ? pollRunTrace(runTrace, options.streams, options.onTrace) : undefined;
 	// The last snapshot once the run settled (any outcome); `stop()` is idempotent past the first call.
 	let finalTrace: ShellTrace | undefined;
 	const settleTrace = (): { trace: ShellTrace } | Record<string, never> => {
@@ -942,6 +1002,8 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				timeoutMs: nativeTimeoutMs,
 				signal: runAbortController.signal,
 				filesystem: options?.filesystem,
+				speech: options?.speech,
+				commands: options?.commands,
 				streams: options?.streams,
 				trace: runTrace,
 			},
@@ -967,7 +1029,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			if (shellSession) {
 				unsettled = { run: runPromise, cleanup: cleanupPromise };
 			} else {
-				void Promise.allSettled([runPromise, cleanupPromise]);
+				void Promise.allSettled([runPromise, cleanupPromise]).then(settleFork);
 			}
 			if (winner.kind === "abort") {
 				trackAbortedShell(options?.sessionKey, runPromise, cleanupPromise);
@@ -1006,6 +1068,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				cancelled: true,
 				timedOut: true,
 				...settleTrace(),
+				...(await settleFork()),
 				...(await dump(annotation)),
 			};
 		}
@@ -1016,13 +1079,14 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				exitCode: undefined,
 				cancelled: true,
 				...settleTrace(),
+				...(await settleFork()),
 				...(await dump("Command cancelled")),
 			};
 		}
 
 		// When the native minimizer rewrote the output, persist the original and
 		// swap the sink's accumulated raw stream for the minimized text with an
-		// `artifact://<id>` footer so the agent can retrieve the raw bytes
+		// `[raw output: <spill url>]` footer so the agent can retrieve the raw bytes
 		// losslessly. The minimized text is a lossy summary, so substitute it
 		// only once the original is addressable — a caller that returns no id
 		// (or an unavailable allocator) must keep the raw stream rather than
@@ -1047,7 +1111,10 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				const minimizedText = minimizedGraphics.push(minimized.text) + minimizedGraphics.finish();
 				sink.replace(minimizedText);
 				const sep = minimizedText.endsWith("\n") ? "" : "\n";
-				sink.push(`${sep}[raw output: artifact://${artifactId}]\n`);
+				// The label keeps its own line so the `[raw output: …]` line stays parseable.
+				sink.push(
+					`${sep}[output summarized by the ${minimized.filter} filter; pipe through \`| cat\` for verbatim output]\n${formatRawOutputNotice(artifactId)}\n`,
+				);
 			}
 		}
 
@@ -1058,6 +1125,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 			workingDir: winner.result.workingDir,
 			...(minimizedMeta ? { minimized: minimizedMeta } : {}),
 			...settleTrace(),
+			...(await settleFork()),
 			...(await dump()),
 		};
 	} catch (err) {

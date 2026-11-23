@@ -1,5 +1,5 @@
 /**
- * Durable ownership registry for targets in the project-shared broker-owned
+ * Durable ownership registry for targets in the project-shared daemon-owned
  * Chromium (`omp.browser.headless`/`omp.browser.headed`).
  *
  * The shared browser outlives any single omp process, but tab ownership is
@@ -8,7 +8,7 @@
  * in-process map dies with it and the pages it opened stay open in the shared
  * Chromium forever, accumulating into multi-GB orphan targets (issue #10022).
  *
- * This module records, on disk under the broker runtime dir, which OS process
+ * This module records, on disk under the daemon runtime dir, which OS process
  * created each shared-browser page target. Any live omp process can then reap
  * targets whose owning process is gone. It only ever touches OMP-owned
  * shared-browser targets — user-owned connected/relay/spawned browsers have no
@@ -22,16 +22,15 @@
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isEnoent, isPidAlive, logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { getDaemonRuntimeDir, isEnoent, isPidAlive, logger, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Browser, CDPSession, Connection } from "puppeteer-core";
-import { daemonRuntimeDir } from "../../launch/paths";
 import { browserConnection } from "./launch";
 
 /** Identifies one shared-browser daemon's target registry. */
 export interface SharedTargetScope {
-	/** Canonical project directory owning the broker (as stamped on the handle). */
+	/** Canonical project directory whose scope holds the browser unit (as stamped on the handle). */
 	projectDir: string;
-	/** Broker daemon name, e.g. `omp.browser.headless`. */
+	/** Key of the browser's `proc` unit, e.g. `omp.browser.headless`. */
 	daemonName: string;
 	runtimeDir?: string;
 }
@@ -67,7 +66,7 @@ const unclosedRetries = new Map<string, Promise<number>>();
 const writeChains = new Map<string, Promise<void>>();
 
 function registryDir(scope: SharedTargetScope): string {
-	return path.join(scope.runtimeDir ?? daemonRuntimeDir(scope.projectDir), `${scope.daemonName}.targets`);
+	return path.join(scope.runtimeDir ?? getDaemonRuntimeDir(scope.projectDir), `${scope.daemonName}.targets`);
 }
 
 /** Serialize a write against others for the same registry dir. */
@@ -127,7 +126,7 @@ export async function forgetSharedTarget(scope: SharedTargetScope, targetId: str
 
 /**
  * Drop every target this process still claims in `scope`. For when the whole
- * shared browser is confirmed gone — the broker reported its daemon in a
+ * shared browser is confirmed gone — the daemon reported its browser unit in a
  * terminal state after a stop — which takes the targets that could not be
  * closed with it; the records are dead weight that would otherwise be
  * rewritten on every later write until this process exits. Only call this on
@@ -223,10 +222,14 @@ export async function collectOrphanTargets(
 const CLOSE_CONFIRM_TIMEOUT_MS = 5_000;
 
 /**
- * Close a page target by id through a fresh CDP session. Returns true only
+ * Close a page target by id on the browser's root connection. Returns true only
  * when CDP reports the target destroyed or confirms it no longer exists; a
  * dropped connection or transient protocol failure returns false so durable
- * ownership remains available for a later retry.
+ * ownership remains available for a later retry. Never throws.
+ *
+ * A browser-target session per call would race: overlapping ones make puppeteer
+ * lose the browser target (puppeteer#15750). Puppeteer enables target discovery
+ * on the root connection when it connects, so `Target.targetDestroyed` arrives there.
  *
  * `Target.closeTarget` answers `success` once Chromium has started closing the
  * page, not once it is gone: the target stays listed until its renderer has
@@ -242,22 +245,21 @@ export async function closeCdpTarget(
 	targetId: string,
 	confirmTimeoutMs = CLOSE_CONFIRM_TIMEOUT_MS,
 ): Promise<boolean> {
-	const session = await browser
-		.target()
-		.createCDPSession()
-		.catch(() => null);
-	if (!session) return false;
+	let connection: Connection;
+	try {
+		connection = browserConnection(browser);
+	} catch {
+		return false;
+	}
 	const destroyed = Promise.withResolvers<boolean>();
 	const onDestroyed = (event: { targetId: string }): void => {
 		if (event.targetId === targetId) destroyed.resolve(true);
 	};
-	session.on("Target.targetDestroyed", onDestroyed);
+	connection.on("Target.targetDestroyed", onDestroyed);
 	let timer: NodeJS.Timeout | undefined;
 	try {
 		try {
-			// Discovery is on before the close, so its `targetDestroyed` cannot be missed.
-			await session.send("Target.setDiscoverTargets", { discover: true });
-			const result = await session.send("Target.closeTarget", { targetId });
+			const result = await connection.send("Target.closeTarget", { targetId });
 			if (result.success) {
 				timer = setTimeout(() => destroyed.resolve(false), confirmTimeoutMs);
 				if (await destroyed.promise) return true;
@@ -267,15 +269,14 @@ export async function closeCdpTarget(
 			// target. Confirm absence before treating the cleanup as complete.
 		}
 		try {
-			const { targetInfos } = await session.send("Target.getTargets");
+			const { targetInfos } = await connection.send("Target.getTargets");
 			return !targetInfos.some(info => info.targetId === targetId);
 		} catch {
 			return false;
 		}
 	} finally {
 		clearTimeout(timer);
-		session.off("Target.targetDestroyed", onDestroyed);
-		await session.detach().catch(() => undefined);
+		connection.off("Target.targetDestroyed", onDestroyed);
 	}
 }
 
@@ -310,9 +311,7 @@ interface CloseUntilGoneOptions {
 }
 
 /**
- * Confirms a close like {@link closeCdpTarget} (#16680), but on the root connection instead of a
- * browser-target session per call: overlapping sessions make puppeteer lose the browser target,
- * so concurrent closes (web search pages) broke the connection. Chromium can answer
+ * Confirms a web search page's close like {@link closeCdpTarget} (#16680). Chromium can answer
  * `success: true` and keep the page, so the close is re-sent every `intervalMs` while the target
  * is listed. Returns false once `budgetMs` elapses or the connection drops; never throws.
  */

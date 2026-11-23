@@ -80,7 +80,7 @@ describe("bash native run box", () => {
 				details: { wallTimeMs: 1500, timeoutSeconds: 300 },
 			},
 			{ ...done, elapsedMs: 1720 },
-			{ command: "make", env: { CI: "1" }, i: "Building the project" },
+			{ command: "make", env: { CI: "1" }, i: "Building the project: Which target fails?" },
 		);
 		expect(view.tool).toMatchObject({ target: "Building the project", targetKind: "text", command: 'CI="1" make' });
 		expect(view.preview).toBe("children");
@@ -863,5 +863,27 @@ describe("user shell runs", () => {
 		expect(JSON.stringify(run.describe(cx(["tool", "ansi", "code"])))).toContain("Minimized git 27.6KB → 9.5KB");
 		expect(JSON.stringify(run.describe(cx(["card", "ansi"])))).toContain("Minimized: git 27.6KB → 9.5KB");
 		expect(Bun.stripANSI(run.render(120).join("\n"))).toContain("Minimized: git 27.6KB → 9.5KB");
+	});
+});
+
+describe("bash call still streaming", () => {
+	beforeAll(async () => {
+		setThemeInstance((await getThemeByName("dark"))!);
+	});
+
+	it("draws an unfinished command as it will continue only while its arguments stream", () => {
+		const ui = { requestRender: () => {}, requestComponentRender: () => {}, resetDisplay: () => {} };
+		const tool = new ToolExecutionComponent("bash", { command: 'cd /tmp && rg -n "va' }, {}, undefined, ui);
+		try {
+			const drawn = () => Bun.stripANSI(tool.render(100).join("\n"));
+			// Streaming: the open quote is closed, so the commands keep their rows.
+			expect(drawn()).toContain("and rg -n");
+			expect(drawn()).not.toContain('cd /tmp && rg -n "va');
+			// Complete: the unterminated quote is the command's own, drawn literally.
+			tool.setArgsComplete();
+			expect(drawn()).toContain('cd /tmp && rg -n "va');
+		} finally {
+			tool.dispose();
+		}
 	});
 });

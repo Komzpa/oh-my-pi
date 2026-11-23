@@ -105,7 +105,7 @@ describe("createAgentSession auto-learn tool activation", () => {
 			model: mock.model,
 			getApiKey: () => "test-key",
 			...noDiscoveryOptions(),
-			cacheWarming: false,
+			cacheWarming: "off",
 			transformProviderContext: context => ({
 				...context,
 				messages: [

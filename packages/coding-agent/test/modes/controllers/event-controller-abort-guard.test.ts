@@ -18,7 +18,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { InteractiveSessionConnection } from "@oh-my-pi/pi-coding-agent/modes/interactive-session";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -196,19 +195,6 @@ describe("EventController.sendErrorNotification", () => {
 		controller.sendErrorNotification(makeAgentEndEvent([makeAssistantMessage("stop")]));
 		expect(spy).toHaveBeenCalledTimes(0);
 	});
-	it("skips an error turn marked as a non-terminal scheduling pause", () => {
-		const spy = vi.spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
-		cfgErrorNotify.override(settings, "on");
-		const controller = new EventController(makeContext());
-		const event = {
-			...makeAgentEndEvent([makeAssistantMessage("error")]),
-			isTerminal: false,
-		} as Extract<AgentSessionEvent, { type: "agent_end" }> & { isTerminal: false };
-
-		controller.sendErrorNotification(event);
-
-		expect(spy).not.toHaveBeenCalled();
-	});
 });
 
 describe("EventController — notifications through the real turn-end path (#handleAgentEnd)", () => {
@@ -324,132 +310,37 @@ describe("EventController — error toast gated while auto-retry is pending", ()
 	});
 });
 
-function asyncWaitEnd(): Extract<AgentSessionEvent, { type: "agent_end" }> {
-	return {
-		...makeAgentEndEvent([makeAssistantMessage("stop")]),
-		isTerminal: false,
-		yielded: true,
-		awaitingAsyncWork: true,
-	};
+function agentPause(yielded: boolean): Extract<AgentSessionEvent, { type: "agent_pause" }> {
+	return { type: "agent_pause", messages: [makeAssistantMessage("stop")], yielded, awaiting: false };
 }
 
-/** Session whose owned background job is pending until `drain()` settles it without delivering a wake. */
-function makeAsyncWaitContext() {
-	let pending = true;
-	const settled = Promise.withResolvers<void>();
-	const ctx = createInteractiveModeContext({
-		sessionManager: { getSessionName: () => "test-session" },
-		session: {
-			// The real settle is emitted while its prompt is still admitted.
-			hasAdmittedSubmission: true,
-			hasPendingAsyncWork: () => pending,
-			settleAsyncWork: () => settled.promise,
-		},
-	});
-	const drain = () => {
-		pending = false;
-		settled.resolve();
-	};
-	return { ctx, drain };
-}
-
-/** One macrotask hop: every microtask continuation queued so far has run. */
-async function nextMacrotask(): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	setImmediate(resolve);
-	await promise;
-}
-
-describe("EventController — terminal title across a non-terminal agent_end", () => {
-	it("keeps the working title and skips loader teardown but still flushes a deferred model switch during a scheduled continuation (isTerminal:false, not yielded), then tears down if it is cancelled before starting", async () => {
+describe("EventController — terminal title across agent_pause", () => {
+	it("keeps the working title and skips teardown at a pause, but flushes a deferred model switch and queued command output", async () => {
 		const stateSpy = vi.spyOn(titleGenerator, "setTerminalTitleState").mockImplementation(() => {});
-		// The reminder/retry is scheduled post-prompt work the session still owes.
-		let continuationPending = true;
-		const continuation = Promise.withResolvers<void>();
-		const ctx = createInteractiveModeContext({
-			sessionManager: { getSessionName: () => "test-session" },
-			session: {
-				get hasPostPromptWork() {
-					return continuationPending;
-				},
-				waitForIdle: () => continuation.promise,
-			},
-		});
+		const ctx = createInteractiveModeContext({ sessionManager: { getSessionName: () => "test-session" } });
 		const markActivityEnd = vi.spyOn(ctx.statusLine, "markActivityEnd");
-		const tornDown = Promise.withResolvers<void>();
-		markActivityEnd.mockImplementation(() => tornDown.resolve());
 		const flushPendingModelSwitch = vi.spyOn(ctx, "flushPendingModelSwitch");
+		const flushPendingCommandOutput = vi.spyOn(ctx, "flushPendingCommandOutput");
 		const controller = new EventController(ctx);
-		await controller.handleEvent({
-			...makeAgentEndEvent([makeAssistantMessage("stop")]),
-			isTerminal: false,
-		} as Extract<AgentSessionEvent, { type: "agent_end" }> & { isTerminal: false });
-		await nextMacrotask();
+		await controller.handleEvent(agentPause(false));
 		// The agent's own continuation follows: never drop to `idle`, never run #finishAgentEnd teardown.
 		expect(stateSpy).not.toHaveBeenCalledWith("idle");
 		expect(markActivityEnd).not.toHaveBeenCalled();
 		// The automatic continuation must still pick up a queued plan-mode model switch.
 		expect(flushPendingModelSwitch).toHaveBeenCalledTimes(1);
-
-		// An abort cancels the continuation before its agent_start, so no terminal
-		// agent_end ever arrives: the settle itself must end the run.
-		continuationPending = false;
-		continuation.resolve();
-		await tornDown.promise;
-		expect(stateSpy).toHaveBeenCalledWith("idle");
+		expect(flushPendingCommandOutput).toHaveBeenCalledTimes(1);
 	});
 
-	it("keeps the working title on a queued steer/follow-up or IRC continuation (isTerminal:false, yielded:true, no awaitingAsyncWork)", async () => {
-		// `AgentSession#flushPendingAgentEnd` re-tags a built terminal end as
-		// non-terminal when queued input is about to drain; `yielded` stays true.
+	it("keeps the working title at a yielded pause that queued input resumes", async () => {
 		const stateSpy = vi.spyOn(titleGenerator, "setTerminalTitleState").mockImplementation(() => {});
 		const ctx = createInteractiveModeContext({
 			sessionManager: { getSessionName: () => "test-session" },
-			session: { queuedMessageCount: 1 },
+			session: { queuedMessageCount: 1, isRunActive: true },
 		});
 		const markActivityEnd = vi.spyOn(ctx.statusLine, "markActivityEnd");
 		const controller = new EventController(ctx);
-		await controller.handleEvent({
-			...makeAgentEndEvent([makeAssistantMessage("stop")]),
-			isTerminal: false,
-			yielded: true,
-		} as Extract<AgentSessionEvent, { type: "agent_end" }>);
-		await nextMacrotask();
+		await controller.handleEvent(agentPause(true));
 		expect(stateSpy).not.toHaveBeenCalledWith("idle");
-		expect(markActivityEnd).not.toHaveBeenCalled();
-	});
-
-	it("drops the title to idle at an async-wait settle and tears down once background work drains without a wake", async () => {
-		// A cancelled or acknowledged background job never delivers a wake, so no
-		// terminal agent_end follows; without this, title and loader spin forever.
-		const stateSpy = vi.spyOn(titleGenerator, "setTerminalTitleState").mockImplementation(() => {});
-		const { ctx, drain } = makeAsyncWaitContext();
-		const markActivityEnd = vi.spyOn(ctx.statusLine, "markActivityEnd");
-		const tornDown = Promise.withResolvers<void>();
-		markActivityEnd.mockImplementation(() => tornDown.resolve());
-		const controller = new EventController(ctx);
-		await controller.handleEvent(asyncWaitEnd());
-		expect(stateSpy).toHaveBeenCalledWith("idle");
-		// The job is still running: loader/progress teardown waits for it.
-		expect(markActivityEnd).not.toHaveBeenCalled();
-
-		drain();
-		await tornDown.promise;
-		expect(markActivityEnd).toHaveBeenCalledTimes(1);
-	});
-
-	it("leaves teardown to the woken run when background work resumes the agent", async () => {
-		vi.spyOn(titleGenerator, "setTerminalTitleState").mockImplementation(() => {});
-		const { ctx, drain } = makeAsyncWaitContext();
-		const markActivityEnd = vi.spyOn(ctx.statusLine, "markActivityEnd");
-		const controller = new EventController(ctx);
-		await controller.handleEvent(asyncWaitEnd());
-		// The job result woke the loop: a new run starts before the drain completes.
-		await controller.handleEvent({ type: "agent_start" } as Extract<AgentSessionEvent, { type: "agent_start" }>);
-
-		drain();
-		await nextMacrotask();
-		// The woken run's own agent_end finalizes; this settle must not stop its loader.
 		expect(markActivityEnd).not.toHaveBeenCalled();
 	});
 
@@ -462,79 +353,4 @@ describe("EventController — terminal title across a non-terminal agent_end", (
 		expect(stateSpy).toHaveBeenCalledWith("idle");
 		expect(markActivityEnd).toHaveBeenCalledTimes(1);
 	});
-});
-
-describe("EventController owner settlement connection", () => {
-	it("waits for the supplied owner and ignores stale local streaming/work/queue state", async () => {
-		const idle = vi.fn(async () => {
-			throw new Error("frontend must not settle work");
-		});
-		const ctx = createInteractiveModeContext({
-			session: {
-				isStreaming: true,
-				hasPendingAsyncWork: () => true,
-				queuedMessageCount: 99,
-				hasPostPromptWork: true,
-				waitForIdle: idle,
-				settleAsyncWork: idle,
-			},
-			viewSession: { isStreaming: false },
-		});
-		const settled = Promise.withResolvers<void>();
-		const wait = vi.fn(() => settled.promise);
-		const connection: InteractiveSessionConnection = {
-			promptCustomMessage: async () => true,
-			prompt: async () => true,
-			abort: async () => {},
-			subscribe: () => () => {},
-			isStreaming: false,
-			isCompacting: false,
-			hasPostPromptWork: false,
-			queuedMessageCount: 0,
-			hasPendingAsyncWork: () => false,
-			beginDispose: () => {},
-			disposeSession: async () => {},
-			checkpoint: async () => {},
-			saveDraft: async () => {},
-			consumeDraft: async () => null,
-			waitForSettled: wait,
-		};
-		const end = vi.spyOn(ctx.statusLine, "markActivityEnd");
-		const controller = new EventController(ctx, connection);
-		await controller.handleEvent(asyncWaitEnd());
-		expect(wait).toHaveBeenCalledTimes(1);
-		expect(end).not.toHaveBeenCalled();
-		settled.resolve();
-		await nextMacrotask();
-		expect(end).toHaveBeenCalledTimes(1);
-		expect(idle).not.toHaveBeenCalled();
-	});
-
-	it.each(["queue", "background", "post-prompt"])(
-		"keeps the run open for owner %s work even when the frontend is idle",
-		async work => {
-			const ctx = createInteractiveModeContext();
-			const connection: InteractiveSessionConnection = {
-				promptCustomMessage: async () => true,
-				prompt: async () => true,
-				abort: async () => {},
-				subscribe: () => () => {},
-				isStreaming: false,
-				isCompacting: false,
-				hasPostPromptWork: work === "post-prompt",
-				queuedMessageCount: work === "queue" ? 1 : 0,
-				hasPendingAsyncWork: () => work === "background",
-				beginDispose: () => {},
-				disposeSession: async () => {},
-				checkpoint: async () => {},
-				saveDraft: async () => {},
-				consumeDraft: async () => null,
-				waitForSettled: async () => {},
-			};
-			const end = vi.spyOn(ctx.statusLine, "markActivityEnd");
-			await new EventController(ctx, connection).handleEvent(asyncWaitEnd());
-			await nextMacrotask();
-			expect(end).not.toHaveBeenCalled();
-		},
-	);
 });

@@ -4,7 +4,6 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { resetYieldTurnState, YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
 
 import * as launchServices from "../../src/launch/services";
-import * as launchClient from "../../src/launch/client";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -75,7 +74,7 @@ describe("YieldTool terminal result latch", () => {
 		await expect(terminal).rejects.toThrow();
 		acceptSection(section);
 		const retry = await tool.execute("retry", { type: "result" });
-		expect(retry.details).toMatchObject({ status: "success", useLastTurn: true });
+		expect(retry.details).toMatchObject({ status: "success", type: "result" });
 	});
 
 	it("releases old incremental waits on reset without closing the new run", async () => {
@@ -152,22 +151,17 @@ describe("YieldTool terminal result latch", () => {
 		expect(retry.details).toMatchObject({ status: "success", data: "finished after tools" });
 	});
 
-	it("retains a listed service after describe failure and stops it before abandonment", async () => {
+	it("retains a listed service on first refusal and stops it before abandonment", async () => {
 		const service = {
-			name: "owned",
+			key: "owned",
+			command: "owned",
 			owner: "worker",
-			persist: false,
-			detached: false,
+			policy: { hold: "leases" },
 			state: "running",
 			startedAt: 1,
 		};
 		spyOn(launchServices, "hasLiveOwnedService").mockReturnValue(true);
 		spyOn(launchServices, "listServicesTolerant").mockResolvedValue({ services: [service] } as never);
-		spyOn(launchClient, "daemonClientForProject").mockResolvedValue({
-			request: async () => {
-				throw new Error("describe unavailable");
-			},
-		} as never);
 		const stop = spyOn(launchServices, "stopService").mockResolvedValue({ ...service, state: "exited" } as never);
 		const tool = new YieldTool(createSession({ requireYieldTool: true, getAgentId: () => "worker" }));
 		await expect(tool.execute("first", { data: "done" })).rejects.toThrow("owned");
@@ -180,7 +174,6 @@ describe("YieldTool terminal result latch", () => {
 	it("keeps refusing when owned-service discovery repeatedly fails", async () => {
 		spyOn(launchServices, "hasLiveOwnedService").mockReturnValue(true);
 		spyOn(launchServices, "listServicesTolerant").mockResolvedValue({ services: [], error: "broker unavailable" });
-		spyOn(launchClient, "daemonClientForProject").mockResolvedValue({} as never);
 		const tool = new YieldTool(createSession({ requireYieldTool: true }));
 		await expect(tool.execute("first", { data: "done" })).rejects.toThrow("broker unavailable");
 		await expect(tool.execute("retry", { data: "done" })).rejects.toThrow("broker unavailable");

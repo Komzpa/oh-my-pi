@@ -461,10 +461,10 @@ describe("AgentSession per-turn prune persistence", () => {
 		const flush = vi.spyOn(sessionManager, "flush").mockRejectedValueOnce(new Error("injected flush failure"));
 		const runStates: string[] = [];
 		const unsubscribeRunState = session.subscribeRunState(state => runStates.push(state));
-		const settles: boolean[] = [];
+		const settles: string[] = [];
 		const notices: string[] = [];
 		const unsubscribe = session.subscribe(event => {
-			if (event.type === "agent_end") settles.push(event.isTerminal !== false);
+			if (event.type === "agent_end" || event.type === "agent_pause") settles.push(event.type);
 			if (event.type === "notice") notices.push(event.message);
 		});
 		try {
@@ -489,10 +489,10 @@ describe("AgentSession per-turn prune persistence", () => {
 			session.agent.emitExternalEvent({ type: "agent_end", messages: [finalAssistant] });
 			await session.waitForIdle();
 
-			// The run reports idle and publishes one terminal settle, so the UI
-			// stops its working indicator instead of spinning forever.
-			expect(runStates).toEqual(["idle"]);
-			expect(settles).toEqual([true]);
+			// The loop end opens the run it ends: the run reports idle and publishes one
+			// agent_end, so the UI stops its working indicator instead of spinning forever.
+			expect(runStates).toEqual(["running", "idle"]);
+			expect(settles).toEqual(["agent_end"]);
 			expect(notices.some(message => message.includes("injected flush failure"))).toBe(true);
 			// No rollback: live context keeps the projected overlay while raw history keeps the payload.
 			expect(liveResultText()).toBe(USELESS_NOTICE);

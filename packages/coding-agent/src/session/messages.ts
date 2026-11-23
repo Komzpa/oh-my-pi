@@ -4,7 +4,7 @@
  * Extends the base AgentMessage type with coding-agent specific message types,
  * and provides a transformer to convert them to LLM-compatible messages.
  */
-import { type AgentMessage, isProviderRefusalMessage } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, toProviderReplayMessage } from "@oh-my-pi/pi-agent-core";
 import {
 	isUserInterruptAbort,
 	isCustomMessageContent,
@@ -33,6 +33,9 @@ export {
 	isSilentAbort,
 	USER_INTERRUPT_LABEL,
 	isUserInterruptAbort,
+	AGENT_KILL_LABEL,
+	type InterruptReason,
+	isInterruptReason,
 	shouldRenderAbortReason,
 	GENERIC_ABORT_SENTINEL,
 	resolveAbortLabel,
@@ -46,6 +49,7 @@ export {
 	isUserInvokedSkillPrompt,
 	isUserTurnInitiator,
 } from "@oh-my-pi/pi-tui/chat/messages";
+import { calculateContextTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	invalidateMessageCache,
 	registerMessageCacheInvalidator,
@@ -59,7 +63,6 @@ import restartHarnessNotice from "../prompts/restart-harness-notice.md" with { t
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { cleanTinyMessage, formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 import { completedToolCallIds, latestUserTurnIndex, shrinkToolHistoryMessage } from "./tool-history-shrink";
-import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
 
 export {
 	type BranchSummaryMessage,
@@ -426,6 +429,7 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 				role: message.role,
 				customType: message.customType,
 				content: normalizeProviderReplayValue(message.content),
+				excludeFromContext: message.role === "custom" ? message.excludeFromContext : undefined,
 			};
 		case "branchSummary":
 			return { role: message.role, summary: message.summary };
@@ -542,25 +546,6 @@ function stripDemotedThinkingForLlm(message: AssistantMessage): AssistantMessage
 	return demoted ? { ...message, content: demoted.strippedContent } : message;
 }
 
-/**
- * Replay `xd://<device>` tool-call names under their bare device name. Sessions
- * saved before the agent loop canonicalized fallback-resolved names persist the
- * alias, which providers reject as a function name (#13352). Call ids are kept,
- * so call/result pairing is unchanged.
- */
-function canonicalizeXdToolCallNames(message: AssistantMessage): AssistantMessage {
-	let content: AssistantMessage["content"] | undefined;
-	for (let i = 0; i < message.content.length; i++) {
-		const block = message.content[i]!;
-		if (block.type !== "toolCall") continue;
-		const name = stripXdUrlPrefix(block.name);
-		if (name === block.name) continue;
-		content ??= message.content.slice();
-		content[i] = { ...block, name };
-	}
-	return content ? { ...message, content } : message;
-}
-
 /** A provider-rejection turn carrying nothing but the error flag: stopReason
  *  "error" with no text, thinking, or tool calls — e.g. a request the provider
  *  rejected before any output (an oversized 413 payload). Persisting it writes an
@@ -672,6 +657,42 @@ export function assistantTurnProducedOutput(message: Pick<AssistantMessage, "sto
  */
 export function assistantTurnDelivered(message: Pick<AssistantMessage, "content">): boolean {
 	return message.content.some(isDeliverableContent);
+}
+
+/**
+ * Occupied context tokens carried by a usage record, using the same accounting
+ * as session compaction ({@link calculateContextTokens}): a provider-reported
+ * `contextTokens` wins; otherwise the billable `totalTokens` (or the bucket
+ * sum when no total is reported) minus provider-side orchestration tokens.
+ * Live `message.usage` payloads and persisted transcript records are loosely
+ * typed, so numeric fields are validated here. Returns 0 when the record
+ * carries no usage signal.
+ */
+export function usageContextTokens(raw: unknown): number {
+	if (!isRecord(raw)) return 0;
+	const field = (record: Record<string, unknown>, key: string): number => {
+		const value = record[key];
+		return typeof value === "number" && Number.isFinite(value) ? value : 0;
+	};
+	const contextTokens = raw.contextTokens;
+	const orchestration = isRecord(raw.orchestration) ? raw.orchestration : undefined;
+	return calculateContextTokens({
+		input: field(raw, "input"),
+		output: field(raw, "output"),
+		cacheRead: field(raw, "cacheRead"),
+		cacheWrite: field(raw, "cacheWrite"),
+		totalTokens: field(raw, "totalTokens"),
+		...(typeof contextTokens === "number" && Number.isFinite(contextTokens) ? { contextTokens } : {}),
+		...(orchestration
+			? {
+					orchestration: {
+						input: field(orchestration, "input"),
+						cacheRead: field(orchestration, "cacheRead"),
+						output: field(orchestration, "output"),
+					},
+				}
+			: {}),
+	});
 }
 
 /** Extract the optional `__queueChipText` field from a CustomMessage's
@@ -1189,7 +1210,7 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 			return out;
 		}
 		case "custom": {
-			if (!isCustomMessageContent(m.content)) return [];
+			if (m.excludeFromContext || !isCustomMessageContent(m.content)) return [];
 			if (isSteeringUserMessage(m)) {
 				const converted = convertMessageToLlm(wrapSteeringUserMessage(m));
 				return converted ? [converted] : [];
@@ -1255,24 +1276,18 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 			if (userInterrupted && !interruptedNext && source.content.length === 0 && m.requestControls === undefined) {
 				return [];
 			}
-			const converted = convertMessageToLlm(canonicalizeXdToolCallNames(source));
+			const converted = convertMessageToLlm(source);
 			return converted ? [converted] : [];
 		}
 		case "branchSummary":
 		case "compactionSummary":
 		case "user":
-		case "developer": {
+		case "developer":
+		case "toolResult": {
 			// Core roles share one transformer with agent-core —
 			// duplicating them here is how snapcompact frames once
 			// silently fell off the provider request.
 			const converted = convertMessageToLlm(m);
-			return converted ? [converted] : [];
-		}
-		case "toolResult": {
-			// Same pre-canonicalization history as `canonicalizeXdToolCallNames`;
-			// Gemini replays the result under this name.
-			const toolName = stripXdUrlPrefix(m.toolName);
-			const converted = convertMessageToLlm(toolName === m.toolName ? m : { ...m, toolName });
 			return converted ? [converted] : [];
 		}
 		default:
@@ -1309,9 +1324,9 @@ export interface ContextViewMessage {
  * and array conversion caches. Steering messages show the envelope
  * {@link wrapSteeringForModel} sends (sharing its wrapper cache); it maps
  * one-to-one, so source indices hold. Mirrors the {@link convertToLlm} loop
- * through {@link convertMessageAt}, then drops API-level provider refusals
- * like the send path's `filterProviderReplayMessages`, since they are never
- * replayed.
+ * through {@link convertMessageAt}, then applies the send path's replay policy
+ * (`toProviderReplayMessage`): provider refusals are dropped and provider-error
+ * tool placeholders lose the provider's error text.
  *
  * Kept separate from `convertToLlm` because the viewer needs source indices:
  * reporting them from `convertToLlm` would add a per-message callback and
@@ -1323,8 +1338,8 @@ export function convertMessagesForContextView(messages: AgentMessage[]): Context
 	const result: ContextViewMessage[] = [];
 	for (let sourceIndex = 0; sourceIndex < modelMessages.length; sourceIndex++) {
 		for (const message of convertMessageAt(modelMessages, sourceIndex, convertOne)) {
-			if (message.role === "assistant" && isProviderRefusalMessage(message)) continue;
-			result.push({ message, sourceIndex, convertedIndex: result.length });
+			const replay = toProviderReplayMessage(message);
+			if (replay) result.push({ message: replay, sourceIndex, convertedIndex: result.length });
 		}
 	}
 	return result;

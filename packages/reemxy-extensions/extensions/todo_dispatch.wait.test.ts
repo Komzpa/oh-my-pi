@@ -2224,7 +2224,7 @@ test("nested device dispatch does not duplicate its marked staffing notice", asy
 	const result = (toolName, input, content, details = {}) => h.handlers.get("tool_result")({ toolName, input, content, details, isError: false }, h.ctx);
 	try {
 		const inner = await result("goal_deadline", { action: "status" }, [{ type: "text", text: "original deadline output" }]);
-		const outer = await result("write", { path: "xd://goal_deadline" }, inner.content, { xdev: { tool: "goal_deadline", mode: "execute" } });
+		const outer = await result("bash", { command: "goal_deadline '{\"action\":\"status\"}'" }, inner.content, { tool: "goal_deadline", mode: "execute" });
 		expect(outer.content.filter(part => part.harnessNotice === true)).toHaveLength(1);
 		expect(outer.content.at(-1).text).toBe("original deadline output");
 		const direct = await result("read", { path: "README.md" }, [{ type: "text", text: inner.content[0].text }]);
