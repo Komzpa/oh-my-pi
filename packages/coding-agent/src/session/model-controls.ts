@@ -14,15 +14,17 @@ import {
 import { isFireworksFastModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
-import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
+import { modelsAreEqual, routedModelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
 import { classifyDifficulty } from "../auto-thinking/classifier";
 import type { ModelRegistry } from "../config/model-registry";
 import {
 	filterAvailableModelsByEnabledPatterns,
+	findScopedModelIndex,
 	formatModelStringWithRouting,
 	getModelMatchPreferences,
 	type ResolvedModelRoleValue,
+	resolveImplicitDefaultRole,
 	resolveModelRoleValue,
 } from "../config/model-resolver";
 import { buildServiceTierByFamily } from "../config/service-tier";
@@ -93,12 +95,11 @@ export function resolveRoleModelCycle(
 	const matchPreferences = getModelMatchPreferences(settings);
 	const models: ResolvedRoleModel[] = [];
 	for (const role of roleOrder) {
-		const roleModelStr =
-			role === "default"
-				? (settings.getModelRole("default") ?? `${currentModel.provider}/${currentModel.id}`)
-				: settings.getModelRole(role);
-		if (!roleModelStr) continue;
-		const resolved = resolveModelRoleValue(roleModelStr, availableModels, { settings, matchPreferences });
+		const configuredRole = settings.getModelRole(role);
+		const resolved =
+			role === "default" && !configuredRole
+				? resolveImplicitDefaultRole(currentModel, availableModels, matchPreferences)
+				: resolveModelRoleValue(configuredRole, availableModels, { settings, matchPreferences });
 		if (!resolved.model) continue;
 		models.push({
 			role,
@@ -115,8 +116,12 @@ export function resolveRoleModelCycle(
 	// pointing at a model the session no longer runs; cycling from that
 	// stale slot lands on the wrong neighbor and reads as a skipped entry.
 	let currentIndex = lastRole ? models.findIndex(entry => entry.role === lastRole) : -1;
-	if (currentIndex !== -1 && !modelsAreEqual(models[currentIndex].model, currentModel)) currentIndex = -1;
-	if (currentIndex === -1) currentIndex = models.findIndex(entry => modelsAreEqual(entry.model, currentModel));
+	if (currentIndex !== -1 && !routedModelsAreEqual(models[currentIndex].model, currentModel)) {
+		currentIndex = -1;
+	}
+	if (currentIndex === -1) {
+		currentIndex = models.findIndex(entry => routedModelsAreEqual(entry.model, currentModel));
+	}
 	if (currentIndex === -1) currentIndex = 0;
 	return { models, currentIndex };
 }
@@ -330,7 +335,7 @@ export class ModelControls {
 		options?.beforeSwitch?.();
 		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(targetModel);
-		const modelSelector = `${targetModel.provider}/${targetModel.id}`;
+		const modelSelector = formatModelStringWithRouting(targetModel);
 		if (options?.reason === undefined) {
 			this.#host.sessionManager.appendModelChange(modelSelector, role);
 		} else {
@@ -384,10 +389,10 @@ export class ModelControls {
 		await this.#host.setModelWithProviderSessionReset(targetModel, selection);
 		// Identity, not object equality: the agent's resolver and metadata rebinds swap in refitted rows of the
 		// same model. Only a different model means another selection replaced this one during reconciliation.
-		const landed = modelsAreEqual(this.#model, targetModel);
+		const landed = routedModelsAreEqual(this.#model, targetModel);
 		if (landed) {
 			this.#host.sessionManager.appendModelChange(
-				`${targetModel.provider}/${targetModel.id}`,
+				formatModelStringWithRouting(targetModel),
 				options?.prewalk
 					? PREWALK_MODEL_CHANGE_ROLE
 					: options?.ephemeral
@@ -503,8 +508,7 @@ export class ModelControls {
 		const scopedModels = await this.#getScopedModelsWithApiKey();
 		if (scopedModels.length <= 1) return undefined;
 
-		const currentModel = this.#model;
-		let currentIndex = scopedModels.findIndex(sm => modelsAreEqual(sm.model, currentModel));
+		let currentIndex = findScopedModelIndex(scopedModels, this.#model);
 
 		if (currentIndex === -1) currentIndex = 0;
 		const len = scopedModels.length;
@@ -518,7 +522,7 @@ export class ModelControls {
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(next.model));
 		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(next.model);
-		this.#host.sessionManager.appendModelChange(`${next.model.provider}/${next.model.id}`);
+		this.#host.sessionManager.appendModelChange(formatModelStringWithRouting(next.model));
 		this.#host.settings.getStorage()?.recordModelUsage(`${next.model.provider}/${next.model.id}`);
 
 		// Apply the scoped model's configured thinking level, preserving auto.
@@ -550,7 +554,7 @@ export class ModelControls {
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(nextModel));
 		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(nextModel);
-		this.#host.sessionManager.appendModelChange(`${nextModel.provider}/${nextModel.id}`);
+		this.#host.sessionManager.appendModelChange(formatModelStringWithRouting(nextModel));
 		this.#host.settings.getStorage()?.recordModelUsage(`${nextModel.provider}/${nextModel.id}`);
 		// Re-apply the current thinking level (or auto) for the newly selected model
 		this.#reapplyThinkingLevel();

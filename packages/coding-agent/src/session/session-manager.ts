@@ -41,6 +41,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { isTaskToolDetails, type StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { SessionTreePosition } from "@oh-my-pi/pi-tui/status-line/host";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { moveFileAcrossDevices } from "../utils/atomic-file";
 import { hasAnnotationDraftsSync } from "../extensibility/custom-commands/bundled/annotate/draft-store";
@@ -579,6 +580,15 @@ function orderedByTimestamp(a: SessionTreeNode, b: SessionTreeNode): number {
 	return new Date(a.entry.timestamp).getTime() - new Date(b.entry.timestamp).getTime();
 }
 
+function entriesByTimestamp(a: SessionEntry, b: SessionEntry): number {
+	return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+}
+
+function sameTreePosition(a: SessionTreePosition | undefined, b: SessionTreePosition | undefined): boolean {
+	if (a === undefined || b === undefined) return a === b;
+	return a.ahead === b.ahead && a.branch?.index === b.branch?.index && a.branch?.count === b.branch?.count;
+}
+
 /**
  * The most recent model role on `branch`, or undefined when no model change
  * was recorded. `skipEphemeral` passes over temporary switches (retry fallback
@@ -688,6 +698,13 @@ export class SessionEntryIndex {
 	#retiredReaders = new Set<number>();
 	#active = new Map<string, SessionEntry>();
 	#retryRecoveries?: Map<string, AssistantRetryRecovery>;
+	/**
+	 * Ids of the entries whose subtree holds a user turn (index metadata `userRequest`): the
+	 * branches a fork counts. Recovery paths that drop a failed reply branch the
+	 * session too, but leave no user turn behind, so they never read as forks.
+	 */
+	#withUserTurn = new Set<string>();
+	#treePositionMemo: { generation: number; position: SessionTreePosition | undefined } | undefined;
 
 	clear(closeReader = true): void {
 		this.#metadataCache = undefined;
@@ -697,6 +714,7 @@ export class SessionEntryIndex {
 		this.#ordered = [];
 		this.#children.clear();
 		this.#childrenLoaded = true;
+		this.#withUserTurn.clear();
 		this.#labels.clear();
 		this.#leaf = null;
 		this.#usage = emptyUsageStatistics();
@@ -823,6 +841,10 @@ export class SessionEntryIndex {
 		const bucket = this.#children.get(entry.parentId);
 		if (bucket) bucket.push(entry.id);
 		else this.#children.set(entry.parentId, [entry.id]);
+		// A child indexed before its parent (an out-of-order journal) already holds a user turn.
+		if (indexed.userRequest || this.#children.get(entry.id)?.some(child => this.#withUserTurn.has(child))) {
+			this.#markUserTurn(entry.id);
+		}
 		if (entry.type === "label") {
 			if (entry.label) this.#labels.set(entry.targetId, entry.label);
 			else this.#labels.delete(entry.targetId);
@@ -1063,7 +1085,73 @@ export class SessionEntryIndex {
 			if (bucket) bucket.push(entry.id);
 			else this.#children.set(entry.parentId, [entry.id]);
 		}
+		this.#withUserTurn.clear();
+		for (const entry of this.#ordered) {
+			if (entry.userRequest) this.#markUserTurn(entry.id);
+		}
 		this.#childrenLoaded = true;
+	}
+
+	/** Mark `entry` and its ancestors as holding a user turn, stopping at the first already marked. */
+	#markUserTurn(id: string): void {
+		let cursor: string | null | undefined = id;
+		while (cursor && !this.#withUserTurn.has(cursor)) {
+			this.#withUserTurn.add(cursor);
+			cursor = this.#entriesById.get(cursor)?.parentId;
+		}
+	}
+
+	/**
+	 * Where the active leaf sits in the tree: the branch it is on at the deepest
+	 * fork its path passes through, and the user turns on the newest
+	 * continuation below it. Undefined at the tip of a session without forks;
+	 * the same object while the position is unchanged.
+	 */
+	treePosition(): SessionTreePosition | undefined {
+		const memo = this.#treePositionMemo;
+		if (memo?.generation === this.#generation) return memo.position;
+		const next = this.#computeTreePosition();
+		const position = memo && sameTreePosition(memo.position, next) ? memo.position : next;
+		this.#treePositionMemo = { generation: this.#generation, position };
+		return position;
+	}
+
+	#computeTreePosition(): SessionTreePosition | undefined {
+		this.#ensureChildren();
+		const path = this.branchView();
+		let branch: SessionTreePosition["branch"];
+		for (let index = path.length - 1; index >= 0 && branch === undefined; index--) {
+			const entry = path[index]!;
+			const siblings = this.#children.get(entry.parentId);
+			if (!siblings || siblings.length < 2) continue;
+			const branches = siblings
+				.filter(sibling => sibling === entry.id || this.#withUserTurn.has(sibling))
+				.map(sibling => (sibling === entry.id ? entry : this.get(sibling, false)))
+				.filter(sibling => sibling !== undefined);
+			if (branches.length < 2) continue;
+			branches.sort(entriesByTimestamp);
+			branch = { index: branches.indexOf(entry) + 1, count: branches.length };
+		}
+
+		let ahead = 0;
+		const seen = new Set<string>();
+		let cursor = this.#leaf;
+		while (true) {
+			const next = this.#children
+				.get(cursor)
+				?.filter(child => this.#withUserTurn.has(child))
+				.map(child => this.get(child, false))
+				.filter(child => child !== undefined)
+				.sort(entriesByTimestamp)
+				.at(-1);
+			if (!next || seen.has(next.id)) break;
+			seen.add(next.id);
+			if (this.#entriesById.get(next.id)?.userRequest) ahead++;
+			cursor = next.id;
+		}
+
+		if (branch === undefined) return ahead === 0 ? undefined : { ahead };
+		return { branch, ahead };
 	}
 
 	childrenOf(parentId: string): SessionEntry[] {
@@ -5294,6 +5382,11 @@ export class SessionManager {
 
 	getEntry(id: string): SessionEntry | undefined {
 		return this.#index.get(id);
+	}
+
+	/** The active leaf's place in the session tree ({@link SessionEntryIndex.treePosition}). */
+	getTreePosition(): SessionTreePosition | undefined {
+		return this.#index.treePosition();
 	}
 
 	/** All direct children of an entry. */

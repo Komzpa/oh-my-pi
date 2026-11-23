@@ -663,6 +663,9 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			);
 			const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
 			const epoch = (value: unknown): number | null => (Number.isSafeInteger(value) ? (value as number) : null);
+			// Every non-NULL cause disables a row at runtime; a damaged non-text cause must not revive it.
+			const disabledCause = (value: unknown): string | null =>
+				value === null || value === undefined ? null : typeof value === "string" ? value : "disabled";
 			let restored = 0;
 			this.#db.transaction(() => {
 				using insert = this.#db.prepare(
@@ -675,7 +678,11 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 						row.provider as string,
 						row.credential_type as string,
 						row.data as string,
-						present.has("disabled_cause") ? text(row.disabled_cause) : row.disabled === 1 ? "disabled" : null,
+						present.has("disabled_cause")
+							? disabledCause(row.disabled_cause)
+							: row.disabled === 1
+								? "disabled"
+								: null,
 						text(row.identity_key),
 						epoch(row.created_at),
 						epoch(row.updated_at),
@@ -683,6 +690,29 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 					restored += result.changes;
 				}
 			})();
+			// Logins an auth broker does not serve stay local; without their markers the
+			// hybrid store would route the restored credentials back to the broker.
+			try {
+				const providers = readSalvageableRows<Record<string, unknown>>(
+					source.db,
+					"auth_broker_local_providers",
+					"provider, created_at",
+				);
+				for (const row of providers) {
+					if (typeof row.provider !== "string") continue;
+					this.#db.run(
+						`INSERT OR IGNORE INTO auth_broker_local_providers (provider, created_at) VALUES (?, COALESCE(?, ${SQLITE_NOW_EPOCH}))`,
+						[row.provider, epoch(row.created_at)],
+					);
+				}
+			} catch (error) {
+				logger.debug("No local-provider markers salvaged from the quarantined auth database", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+			// The replacement is already at the current schema, so rows from an older
+			// store never pass through the migration that renamed their provider.
+			if (rows.some(row => row.provider === "singularityapi")) this.#migrateAuthSchemaV7ToV8();
 			const log = restored > 0 ? logger.warn : logger.error;
 			log("Restored credentials from the quarantined auth database", {
 				quarantinedPath: backupPath,

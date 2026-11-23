@@ -139,6 +139,7 @@ The same file also exposes non-tool helpers used by `/todo`:
   - Successful mutations update the live cache and persist compact edits; an archive edit carries the triggering operation and full archived rows so active-branch replay can reconstruct live and archive separately. Earlier full transcript snapshots remain unchanged for historical export consumers.
   - `getLatestTodoArchiveFromEntries(...)` reconstructs archived rows for explicit archive views.
    - Failed `todo` results cause `agent-session` to enqueue a hidden next-turn reminder (`customType: "todo-error-reminder"`).
+   - With `todo.backend` set to an extension's backend, every committed change to the main session's list is then handed to it as a whole list (`docs/extensions.md`, Todo backends). The backend is told after the commit and cannot refuse it.
 - User-visible prompts / interactive UI
    - Transcript block is rendered by `todoToolRenderer` and merged with the call line.
    - `event-controller` updates the visible todo panel from successful results.

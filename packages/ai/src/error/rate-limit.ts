@@ -447,7 +447,7 @@ const USAGE_LIMIT_PATTERN =
  * HTTP 402 Payment Required represents an account-billing cap (xAI
  * Grok Build "usage balance exhausted", DeepSeek "Insufficient Balance",
  * OpenCode Go "Insufficient account funds", OpenRouter credit exhaustion)
- * when opaque, payment/deactivation/balance/funds-worded, or
+ * when opaque, payment/deactivation/balance/funds/billing-error-worded, or
  * QUOTA_EXHAUSTED/CONCURRENT_LIMIT. Informative non-quota 402s (e.g.
  * endpoint subscription requirements) remain non-usage-limits. Always combine
  * with {@link isUsageLimitOutcome} when a message is available.
