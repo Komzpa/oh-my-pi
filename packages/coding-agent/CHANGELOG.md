@@ -35,6 +35,7 @@
 - The bash tool's visualization keeps a one-line awk, jq, regex or other embedded program highlighted where it appears in the command; only multi-line programs move below it behind a `⟦awk ↓⟧`-style chip.
 - Added `discovery.modelsUrl` and `discovery.includeHidden` for `openai-models-list` providers, so a custom provider can list models from a Codex-style native catalog (`slug` rows) while inference keeps using its `baseUrl` ([#20149](https://github.com/can1357/oh-my-pi/pull/20149) by [@Komzpa](https://github.com/Komzpa))
 - `/wt` (TUI, ACP, RPC and `worktree.onStart`) runs the new worktree's `post-checkout` hook as `git worktree add` does, with a spinner in the TUI, then loads the skills and commands it added; a failing hook keeps the worktree and shows a warning, and quitting while it runs keeps that worktree with a warning. In an ovnfs checkout only a `core.hooksPath` hook runs ([#20045](https://github.com/can1357/oh-my-pi/pull/20045) by [@Dangerboi](https://github.com/Dangerboi))
+- Added `task.agentMaxEffort`, a map of agent name to the highest reasoning effort that agent may run at, on any model or provider. It lowers the effective effort of task spawns (caller `effort`, agent `thinking-level`, model-pattern suffix) and of cold-revived agents; `task.maxEffort` still applies and the lower of the two wins. The map is empty by default ([#16665](https://github.com/can1357/oh-my-pi/pull/16665) by [@Komzpa](https://github.com/Komzpa))
 
 ### Fixed
 
