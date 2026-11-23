@@ -208,6 +208,10 @@
 - Fixed subagent spawns with an explicit model that cannot be resolved silently running on a different model; the spawn now fails and names the requested models ([#16528](https://github.com/can1357/oh-my-pi/pull/16528) by [@Komzpa](https://github.com/Komzpa))
 - Fixed Discourse post URLs like `/t/<slug>/<topic>/<post>` returning the topic from post 1; the cited post's author, date and text now come first, followed by the topic title ([#16522](https://github.com/can1357/oh-my-pi/pull/16522) by [@Komzpa](https://github.com/Komzpa))
 
+### Changed
+
+- Rereading an unchanged skill file that is already in the current context now returns a short stub instead of repeating it; `?full` still returns the whole file ([#16521](https://github.com/can1357/oh-my-pi/pull/16521) by [@Komzpa](https://github.com/Komzpa))
+
 ## [19.1.0] - 2026-11-21
 
 ### Breaking Changes
