@@ -191,6 +191,8 @@ export async function readTaskWorkspace(
 }
 
 export async function validatePersistedTaskWorkspace(manager: SessionManager): Promise<void> {
+	// Minimal session managers (in-memory children, test doubles) keep no entries and so no record.
+	if (typeof manager.getEntries !== "function") return;
 	const entry = manager
 		.getEntries()
 		.find(entry => entry.type === "custom" && entry.customType === "verified-task-workspace");

@@ -275,7 +275,10 @@ function writePersisted(document: ProviderStateDocument): void {
 function mutate<T>(
 	operation: (records: Map<string, ProviderExhaustionRecord>, transitions: ProviderAvailabilityTransition[]) => T,
 ): T {
-	return withFileLockSync(getProviderCooldownsPath(), () => {
+	const lockedFile = getProviderCooldownsPath();
+	// The native lock is a sidecar file since upstream 0b01bf120472; its directory must exist first.
+	fs.mkdirSync(path.dirname(lockedFile), { recursive: true });
+	return withFileLockSync(lockedFile, () => {
 		const document = readDocument(true);
 		const previous = new Map(document.providers);
 		const result = operation(document.providers, document.transitions);

@@ -214,12 +214,18 @@ export class RateLimits implements LimitsApi {
 				};
 	}
 
-	/** Whether any sibling is unblocked under the scopes selection reads; else the earliest unblock. */
+	/**
+	 * Whether any sibling is unblocked under the scopes selection reads; else the
+	 * earliest unblock. A sibling with a live model-policy block was refused the
+	 * requested model, and no block expiry restores that, so it adds no unblock
+	 * time a caller could usefully wait for.
+	 */
 	#siblingAvailability(
 		provider: string,
 		routing: CredentialBlockRouting,
 		siblings: readonly { credential: AuthCredential; index: number }[],
 	): { free: boolean; retryAtMs?: number } {
+		const modelPolicyScope = modelAccountPolicyBlockScope(routing.rankingContext.modelId);
 		let retryAtMs: number | undefined;
 		for (const sibling of siblings) {
 			// Sibling availability must use the same scope set selection reads, or
@@ -231,6 +237,12 @@ export class RateLimits implements LimitsApi {
 				routing.siblingBlockScopes,
 			);
 			if (siblingBlockedUntil === undefined) return { free: true };
+			if (
+				modelPolicyScope !== undefined &&
+				this.#deps.blocks.isScopeBlocked(provider, routing.providerKey, sibling.index, modelPolicyScope)
+			) {
+				continue;
+			}
 			if (retryAtMs === undefined || siblingBlockedUntil < retryAtMs) retryAtMs = siblingBlockedUntil;
 		}
 		return { free: false, retryAtMs };
@@ -462,7 +474,7 @@ export class RateLimits implements LimitsApi {
 			// Thread the provider-specified reset window (e.g. Devin "Your limit
 			// will reset in 13 minutes") into the block duration so the credential
 			// is not reselected and hammered while the cap remains active.
-			const retryAfterMs = extractProviderRetryHint(provider, message);
+			const retryAfterMs = extractProviderRetryHint(provider, message, options?.baseUrl);
 			const mark = await this.markReached(provider, sessionId, {
 				retryAfterMs,
 				providerTimed: retryAfterMs !== undefined,

@@ -125,13 +125,17 @@ async function runKeptAliveSubagent(
 	if (checkpoints) await Bun.write(fixture, "checkpoint fixture");
 	const mock = createMockModel({
 		handler: context => {
-			if (!(context.tools ?? []).some(tool => tool.name === "yield")) return { content: ["label"] };
+			// Schema-less children carry no `yield` since upstream 2b285a631083: the worker's turns are
+			// the ones offered `read`; the label call has no tools.
+			const tools = context.tools ?? [];
+			if (!tools.some(tool => tool.name === "read")) return { content: ["label"] };
 			if (checkpoints) {
 				checkpoints.requests.push(structuredClone(context.messages));
 				if (checkpoints.requests.length === 1) checkpoints.advanceClock();
 				if (checkpoints.requests.length < 3)
 					return { content: [{ type: "toolCall", name: "read", arguments: { path: fixture } }] };
 			}
+			if (!tools.some(tool => tool.name === "yield")) return { content: ["done"] };
 			return { content: [{ type: "toolCall", name: "yield", arguments: { type: "result", data: "done" } }] };
 		},
 	});

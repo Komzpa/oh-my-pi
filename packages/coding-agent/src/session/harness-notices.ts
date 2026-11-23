@@ -39,6 +39,7 @@ export function isHarnessNotice(message: AgentMessage): boolean {
 			"goal-budget-limit",
 			"tool-roster-notice",
 			"session-agent-notice",
+			// Legacy: sessions recorded before upstream removed xd:// (de21c0ac454b) still carry it.
 			"xdev-mount-notice",
 			"tool-call-loop-redirect",
 			"rewind-report",

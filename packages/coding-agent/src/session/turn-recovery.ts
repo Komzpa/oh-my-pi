@@ -2,7 +2,9 @@ import {
 	type Agent,
 	AgentBusyError,
 	type AgentMessage,
+	isExcludedFromContext,
 	isSyntheticToolResultMessage,
+	lastContextIndex,
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import type {
@@ -21,12 +23,14 @@ import { calculateRateLimitBackoffMs, isBillingCapUsageLimit, parseRateLimitReas
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { shouldDropTruncatedThinkingOnlyAssistant } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
+import { resolveCatalogPolicy } from "@oh-my-pi/pi-catalog/compat/catalog-policy";
 import { fallbackCreditTargets } from "@oh-my-pi/pi-catalog/compat/fallback-credit";
 import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
-import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
+import { routedModelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong, sleepUntil } from "@oh-my-pi/pi-utils";
 import { modelSelectorBlacklistError } from "../config/model-resolver";
+import { cfgOffline } from "../config/auxiliary-model-policy";
 import type { ModelRegistry } from "../config/model-registry";
 import {
 	formatModelStringWithRouting,
@@ -96,7 +100,7 @@ import {
 import { describeUsageFallback } from "./retry-fallback-reason";
 import { providerFallbackReason } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
-import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
+import { type CustomMessageEntry, EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import { isUserQueuedMessage } from "./queued-messages";
 import { sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
@@ -130,6 +134,8 @@ const STREAM_STALL_CONTINUE_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000] a
 const STREAM_STALL_CONTINUE_MAX_RETRIES = STREAM_STALL_CONTINUE_DELAYS_MS.length;
 const GENERIC_ABORT_MAX_RETRIES = 2;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
+/** Bounds best-effort usage-limit bookkeeping so a stalled report or sibling probe cannot hold the terminal agent_end event. */
+const USAGE_LIMIT_BOOKKEEPING_TIMEOUT_MS = 3_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
 const STREAM_STALL_ERROR_RE = /stream stall/i;
@@ -167,15 +173,20 @@ function hasNonWhitespace(value: string): boolean {
 }
 
 /**
- * End of the conversation in `messages`, before trailing context-only custom
- * messages: eval runtime snapshots (appended at startup and on display-context
- * rebuilds) and deliveries folded in without a turn — e.g. an `async-result`
- * landing while a user interrupt suppresses auto-resume. They trail a failed
- * turn without ending it. A user-authored custom prompt is conversation.
+ * End of the conversation in `messages`, before trailing context-only messages:
+ * eval runtime snapshots (appended at startup and on display-context rebuilds),
+ * deliveries folded in without a turn — e.g. an `async-result` landing while a
+ * user interrupt suppresses auto-resume — and rows kept out of context (`!!`
+ * runs, excluded extension rows). They trail a failed turn without ending it.
+ * A user-authored custom prompt that reaches the model is conversation.
  */
 function conversationEnd(messages: readonly AgentMessage[]): number {
 	let end = messages.length;
-	while (end > 0 && messages[end - 1].role === "custom" && !isUserAuthoredMessage(messages[end - 1])) end--;
+	while (end > 0) {
+		const message = messages[end - 1];
+		if (!isExcludedFromContext(message) && (message.role !== "custom" || isUserAuthoredMessage(message))) break;
+		end--;
+	}
 	return end;
 }
 
@@ -497,6 +508,17 @@ export class TurnRecovery {
 	 * with how the previous one was routed.
 	 */
 	#fallbackRoutedFor: string | undefined;
+	/**
+	 * Session whose requests leave other models' reasoning out instead of
+	 * replaying it as text, after a `reasoning_extraction` refusal of a request
+	 * that carried it. Anchored like {@link #fallbackRoutedFor}.
+	 */
+	#demotedReasoningOmittedFor: string | undefined;
+	/**
+	 * Whether the current retry saga already resampled a `reasoning_extraction`
+	 * refusal that arrived mid-stream. Cleared in `resolveRetry()`.
+	 */
+	#midStreamRefusalResampled = false;
 	/** Memoized bootstrap answer, for the window before anything has served. */
 	#bootstrapCache:
 		| { model: Model; level: ThinkingLevel | undefined; routed: boolean; value: ServingModel }
@@ -603,6 +625,9 @@ export class TurnRecovery {
 		if (this.#fallbackRoutedFor === previousSessionId) {
 			this.#fallbackRoutedFor = sessionId;
 		}
+		if (this.#demotedReasoningOmittedFor === previousSessionId) {
+			this.#demotedReasoningOmittedFor = sessionId;
+		}
 	}
 
 	/** Resets per-prompt recovery counters and terminal-stop acceptance. */
@@ -673,6 +698,18 @@ export class TurnRecovery {
 			return undefined;
 		}
 		return active.handle;
+	}
+
+	/**
+	 * Whether a request to `model` leaves other models' reasoning out of its
+	 * input: this session turned it off after a refusal, and `model`'s
+	 * classifier refuses reasoning replayed as text.
+	 */
+	omitsDemotedReasoning(model: Model): boolean {
+		return (
+			this.#demotedReasoningOmittedFor === this.#host.sessionManager.getSessionId() &&
+			resolveCatalogPolicy(model).classifierCotExtraction === true
+		);
 	}
 
 	/**
@@ -1026,7 +1063,13 @@ export class TurnRecovery {
 					await waitForRecovery(Math.min(...records.map(record => record.until)));
 					continue;
 				}
-				if (!providerExhaustionRecord(model.provider) && !this.#host.modelRegistry.hasConfiguredAuth(model)) {
+				// Registries without auth tracking (minimal hosts) report no missing credential.
+				const registry = this.#host.modelRegistry;
+				if (
+					!providerExhaustionRecord(model.provider) &&
+					typeof registry.hasConfiguredAuth === "function" &&
+					!registry.hasConfiguredAuth(model)
+				) {
 					recordProviderFailure(model.provider, {
 						code: "missing_api_key",
 						credentialVersion: this.#host.modelRegistry.providerCredentialVersion(model.provider),
@@ -1043,7 +1086,7 @@ export class TurnRecovery {
 						wrapAround: true,
 					});
 					waitSignal.throwIfAborted();
-					if (!modelsAreEqual(this.#host.model(), model)) continue;
+					if (!routedModelsAreEqual(this.#host.model(), model)) continue;
 					if (fallback) {
 						await this.applyRetryFallbackCandidate(fallback.role, fallback.selector, currentSelector, {
 							apiKey: fallback.apiKey,
@@ -1140,27 +1183,46 @@ export class TurnRecovery {
 			const parsedRetryAfterMs = this.#parseRetryAfterMsFromError(errorMessage);
 			const retryAfterMs = parsedRetryAfterMs ?? calculateRateLimitBackoffMs(parseRateLimitReason(errorMessage));
 			recorded = (async (): Promise<UsageLimitOutcome> => {
-				const outcome = await this.#host.modelRegistry.authStorage.limits.markReached(
-					activeModel.provider,
-					this.#host.sessionId(),
-					{
+				// This runs on the agent_end path: a stalled usage report or
+				// sibling probe must never hold the run's terminal event. Bound the
+				// bookkeeping and treat a timeout as "no usage report", so the
+				// retry policy falls back to the retry-after hint.
+				const bookkeepingTimeout = AbortSignal.timeout(USAGE_LIMIT_BOOKKEEPING_TIMEOUT_MS);
+				try {
+					const outcome = await this.#host.modelRegistry.authStorage.limits.markReached(
+						activeModel.provider,
+						this.#host.sessionId(),
+						{
+							retryAfterMs,
+							// Provider-stated timing only when the error text parsed;
+							// the 30-minute fallback is a guess.
+							providerTimed: parsedRetryAfterMs !== undefined,
+							baseUrl: activeModel.baseUrl,
+							modelId: activeModel.id,
+							signal: bookkeepingTimeout,
+						},
+					);
+					return {
+						switchedCredential: outcome.switched,
 						retryAfterMs,
-						// Provider-stated timing only when the error text parsed;
-						// the 30-minute fallback is a guess.
-						providerTimed: parsedRetryAfterMs !== undefined,
-						baseUrl: activeModel.baseUrl,
-						modelId: activeModel.id,
-					},
-				);
-				return {
-					switchedCredential: outcome.switched,
-					retryAfterMs,
-					retryAtMs: outcome.retryAtMs,
-					blockedUntilMs: outcome.blockedUntilMs,
-					priorBlockedUntilMs: outcome.priorBlockedUntilMs,
-					priorBlockedUntilTimed: outcome.priorBlockedUntilTimed,
-					reportResetAtMs: outcome.reportResetAtMs,
-				};
+						retryAtMs: outcome.retryAtMs,
+						blockedUntilMs: outcome.blockedUntilMs,
+						priorBlockedUntilMs: outcome.priorBlockedUntilMs,
+						priorBlockedUntilTimed: outcome.priorBlockedUntilTimed,
+						reportResetAtMs: outcome.reportResetAtMs,
+					};
+				} catch (error) {
+					if (!bookkeepingTimeout.aborted) throw error;
+					return {
+						switchedCredential: false,
+						retryAfterMs,
+						retryAtMs: undefined,
+						blockedUntilMs: undefined,
+						priorBlockedUntilMs: undefined,
+						priorBlockedUntilTimed: undefined,
+						reportResetAtMs: undefined,
+					};
+				}
 			})();
 			this.#usageLimitOutcomes.set(message, recorded);
 		}
@@ -1221,6 +1283,7 @@ export class TurnRecovery {
 	/** Resolve the pending retry promise; the saga is over, and so is its refusal walk. */
 	resolveRetry(): void {
 		this.#refusalWalkTried.clear();
+		this.#midStreamRefusalResampled = false;
 		this.#accountPolicyRotationsRemaining.clear();
 		if (this.#retryResolve) {
 			this.#retryResolve();
@@ -1442,6 +1505,7 @@ export class TurnRecovery {
 		this.#emptyStopRetryCount++;
 		if (this.#emptyStopRetryCount > EMPTY_STOP_MAX_RETRIES) {
 			const attempts = this.#emptyStopRetryCount - 1;
+			this.#emptyStopRetryCount = 0;
 			const outputTokens = assistantMessage.usage.output;
 			const outputTokensExcludingKnownReasoning = Math.max(
 				0,
@@ -1496,6 +1560,18 @@ export class TurnRecovery {
 			content: [{ type: "text", text: this.#emptyStopRetryReminder() }],
 			attribution: "agent",
 			timestamp: Date.now(),
+		});
+		logger.info("Empty-stop retry scheduled", {
+			attempt: this.#emptyStopRetryCount,
+			maxAttempts: EMPTY_STOP_MAX_RETRIES,
+			model: assistantMessage.model,
+			provider: assistantMessage.provider,
+			stopReason: assistantMessage.stopReason,
+			durationMs: assistantMessage.duration,
+			ttftMs: assistantMessage.ttft,
+			errorMessage: assistantMessage.errorMessage,
+			errorStatus: assistantMessage.errorStatus,
+			outputTokens: assistantMessage.usage.output,
 		});
 		this.#host.scheduleAgentContinue({
 			source: "empty-stop-retry",
@@ -1622,10 +1698,12 @@ export class TurnRecovery {
 		reason = "assistant-context-cleanup",
 	): void {
 		const messages = this.#host.agent.state.messages;
-		const lastMessage = messages[messages.length - 1];
+		// Rows kept out of context may trail the failed turn; they stay, the turn goes.
+		const index = lastContextIndex(messages);
+		const lastMessage = messages[index];
 		const lastAssistant: AssistantMessage | undefined = lastMessage?.role === "assistant" ? lastMessage : undefined;
 		if (lastAssistant !== undefined && this.#isSameAssistantMessage(lastAssistant, assistantMessage)) {
-			this.#host.agent.replaceMessages(messages.slice(0, -1));
+			this.#host.agent.replaceMessages(messages.toSpliced(index, 1));
 			return;
 		}
 		// A miss means the failed turn is still in active context (or was never
@@ -1734,20 +1812,52 @@ export class TurnRecovery {
 		const prunePrompt = parentEntry?.type === "custom_message";
 
 		this.removeAssistantMessageFromActiveContext(assistantMessage, "accepted-terminal-empty-stop");
-		if (prunePrompt && this.#host.agent.state.messages.at(-1)?.role === "custom") {
-			this.#host.agent.replaceMessages(this.#host.agent.state.messages.slice(0, -1));
+		const messages = this.#host.agent.state.messages;
+		const promptIndex = lastContextIndex(messages);
+		if (prunePrompt && messages[promptIndex]?.role === "custom") {
+			this.#host.agent.replaceMessages(messages.toSpliced(promptIndex, 1));
 		}
 
 		if (!branchEntry) return;
-		const targetParentId = prunePrompt ? parentEntry.parentId : branchEntry.parentId;
+		// Materialize the branch only on this rare path: the cut re-appends trailing out-of-context rows.
+		const branch = this.#host.sessionManager.getBranchView();
+		const branchIndex = branch.findIndex(entry => entry.id === branchEntry.id);
+		if (branchIndex < 0) return;
+		this.#cutBranchBefore(branch, prunePrompt ? branchIndex - 1 : branchIndex);
+		this.#host.sessionManager.appendCustomEntry("accepted-terminal-empty-stop");
+	}
+
+	/**
+	 * Move the persisted leaf to the parent of `branch[cutIndex]`, dropping that entry and the rest of the
+	 * branch, then re-append the rows kept out of context that trailed it: they belong to the transcript,
+	 * not to the discarded turn, and active context keeps them too.
+	 */
+	#cutBranchBefore(branch: readonly SessionEntry[], cutIndex: number): void {
+		const parentId = branch[cutIndex]!.parentId;
+		const kept = branch
+			.slice(cutIndex + 1)
+			.filter(
+				(entry): entry is CustomMessageEntry =>
+					entry.type === "custom_message" && entry.excludeFromContext === true,
+			);
 		this.#host.withBashBranchTransition(() => {
-			if (targetParentId === null) {
+			if (parentId === null) {
 				this.#host.sessionManager.resetLeaf();
 			} else {
-				this.#host.sessionManager.branch(targetParentId);
+				this.#host.sessionManager.branch(parentId);
 			}
 		});
-		this.#host.sessionManager.appendCustomEntry("accepted-terminal-empty-stop");
+		for (const entry of kept) {
+			this.#host.sessionManager.appendCustomMessageEntry(
+				entry.customType,
+				entry.content,
+				entry.display,
+				entry.details,
+				entry.attribution,
+				new Date(entry.timestamp).getTime(),
+				true,
+			);
+		}
 	}
 
 	/**
@@ -1767,13 +1877,17 @@ export class TurnRecovery {
 		if (!branchEntry) {
 			return undefined;
 		}
-		this.#host.withBashBranchTransition(() => {
-			if (branchEntry.parentId === null) {
-				this.#host.sessionManager.resetLeaf();
-			} else {
-				this.#host.sessionManager.branch(branchEntry.parentId);
+		const branch = this.#host.sessionManager.getBranchView();
+		// Search from the leaf: the failed turn is recent, and each view index loads its archived payload.
+		let branchIndex = -1;
+		for (let index = branch.length - 1; index >= 0; index--) {
+			if (branch[index]!.id === branchEntry.id) {
+				branchIndex = index;
+				break;
 			}
-		});
+		}
+		if (branchIndex < 0) return undefined;
+		this.#cutBranchBefore(branch, branchIndex);
 		return branchEntry.id;
 	}
 
@@ -2318,7 +2432,7 @@ export class TurnRecovery {
 		if (!configured) return undefined;
 		if (modelSelectorBlacklistError(configured, this.#host.modelRegistry.getAvailable())) return undefined;
 		const resolved = resolveModelOverride([configured], this.#host.modelRegistry, this.#host.settings);
-		return resolved.model && modelsAreEqual(resolved.model, currentModel) ? role : undefined;
+		return resolved.model && routedModelsAreEqual(resolved.model, currentModel) ? role : undefined;
 	}
 
 	/** Finds fallback candidates that follow the active selector. */
@@ -2328,13 +2442,16 @@ export class TurnRecovery {
 		currentModel: Model | null | undefined = this.#host.model(),
 		options?: { wrapAround?: boolean },
 	): RetryFallbackSelector[] {
-		return findRetryFallbackCandidates(
+		const candidates = findRetryFallbackCandidates(
 			this.#getRetryFallbackResolutionContext(),
 			role,
 			currentSelector,
 			currentModel,
 			options,
 		).filter(candidate => !modelSelectorBlacklistError(candidate.raw, this.#host.modelRegistry.getAvailable()));
+		if (!cfgOffline.get(this.#host.settings)) return candidates;
+		const provider = this.#host.model()?.provider;
+		return candidates.filter(candidate => provider !== undefined && candidate.provider === provider);
 	}
 
 	#reserveEpisode(): { primary: string; decision: "stay" | "switch" } | undefined {
@@ -2380,7 +2497,7 @@ export class TurnRecovery {
 						reserveFraction: cfgRetryUsageReservePct.get(this.#host.settings) / 100,
 						signal,
 					});
-					if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
+					if (signal.aborted || !routedModelsAreEqual(this.#host.model(), currentModel)) return false;
 					if (
 						primaryHealth.state === "healthy" &&
 						primaryHealth.accounts.some(account => account.selected && account.state === "healthy")
@@ -2402,7 +2519,7 @@ export class TurnRecovery {
 				signal,
 			});
 		} catch (error) {
-			if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
+			if (signal.aborted || !routedModelsAreEqual(this.#host.model(), currentModel)) return false;
 			logger.debug("Usage-aware runtime preflight failed open", {
 				provider: currentModel.provider,
 				model: currentModel.id,
@@ -2410,7 +2527,7 @@ export class TurnRecovery {
 			});
 			return false;
 		}
-		if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
+		if (signal.aborted || !routedModelsAreEqual(this.#host.model(), currentModel)) return false;
 		const selectedAccount = health.accounts.find(account => account.selected);
 		if (health.state === "healthy") {
 			// A healthy sibling does not end the selected account's reserve episode.
@@ -2473,7 +2590,7 @@ export class TurnRecovery {
 			if (
 				signal.aborted ||
 				this.#host.sessionManager.getSessionId() !== sessionId ||
-				!modelsAreEqual(this.#host.model(), currentModel)
+				!routedModelsAreEqual(this.#host.model(), currentModel)
 			)
 				return false;
 		}
@@ -2547,7 +2664,7 @@ export class TurnRecovery {
 		const currentProviderDepleted = this.#host.modelRegistry.authStorage.health.isProviderDepleted(
 			currentModel.provider,
 		);
-		const stale = () => signal.aborted || !modelsAreEqual(this.#host.model(), currentModel);
+		const stale = () => signal.aborted || !routedModelsAreEqual(this.#host.model(), currentModel);
 		for (const role of this.retryFallbackChainKeys(currentSelector, currentModel)) {
 			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel, options)) {
 				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
@@ -2556,6 +2673,7 @@ export class TurnRecovery {
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
 				if (!candidateModel || !this.#host.modelRegistry.hasConfiguredAuth(candidateModel)) continue;
 				const ceiling = this.#host.thinkingLevelCeiling(candidateModel);
+				if (cfgOffline.get(this.#host.settings) && candidateModel.provider !== currentModel.provider) continue;
 				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidateModel, ceiling)) continue;
 				// Skip a candidate whose window cannot hold the live context so we
 				// never switch onto an oversized request (issue #8065).
@@ -2681,6 +2799,7 @@ export class TurnRecovery {
 		if (!candidate) {
 			throw new Error(`Retry fallback model not found: ${selector.raw}`);
 		}
+		if (cfgOffline.get(this.#host.settings) && candidate.provider !== this.#host.model()?.provider) return false;
 		const apiKey =
 			options?.apiKey ??
 			(await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId(), { signal: options?.signal }));
@@ -2828,6 +2947,7 @@ export class TurnRecovery {
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate) continue;
 				if (failedProviderIsDepleted && candidate.provider === failedProvider) continue;
+				if (cfgOffline.get(this.#host.settings) && candidate.provider !== sourceModel?.provider) continue;
 				// A candidate that would leave the request exactly as it is — same
 				// routed model, same effective thinking level — is not a switch, and
 				// must never be applied: `findRetryFallbackCandidates` excludes the
@@ -2986,9 +3106,10 @@ export class TurnRecovery {
 	 * model is not worth retrying, yet a DIFFERENT model is a fresh chance, so
 	 * the chain is consulted before the error becomes final. Skips failures a
 	 * model switch cannot fix or must not replay: cancellations (abort-flavored
-	 * errors are not model faults), context overflow (compaction's job),
-	 * classifier refusals (chain consult is handled on the retryable path with
-	 * `pinFallback`), and turns that already emitted replay-unsafe output.
+	 * errors are not model faults), context overflow the live context actually
+	 * exhibits (compaction's job), classifier refusals (chain consult is handled
+	 * on the retryable path with `pinFallback`), and turns that already emitted
+	 * replay-unsafe output.
 	 */
 	isHardErrorFallbackEligible(message: AssistantMessage): boolean {
 		if (message.stopReason !== "error") return false;
@@ -3011,7 +3132,11 @@ export class TurnRecovery {
 		// Text-ambiguous overflows waive the veto; usage-backed do not — see AIError.isTextAmbiguousContextOverflow (#9235).
 		const contextWindow = model.contextWindow ?? 0;
 		const textAmbiguousOverflow = AIError.isTextAmbiguousContextOverflow(id, message, contextWindow);
-		if (!textAmbiguousOverflow && AIError.isContextOverflow(message, contextWindow)) {
+		if (
+			!textAmbiguousOverflow &&
+			AIError.isContextOverflow(message, contextWindow) &&
+			!this.#overflowTextContradictedByFit(message, model, contextWindow)
+		) {
 			return false;
 		}
 		if (this.#hasReplayUnsafeOutput(message)) return false;
@@ -3019,6 +3144,25 @@ export class TurnRecovery {
 		return this.retryFallbackChainKeys(currentSelector).some(
 			role => this.findRetryFallbackCandidates(role, currentSelector).length > 0,
 		);
+	}
+
+	/**
+	 * An overflow known only from error text while the live context fits the
+	 * model's usable window. The provider rejected the request for another
+	 * reason (e.g. a local server's memory guard saying "prompt too large"), so
+	 * compaction cannot help but a different model can.
+	 */
+	#overflowTextContradictedByFit(message: AssistantMessage, model: Model, contextWindow: number): boolean {
+		if (contextWindow <= 0) return false;
+		if (AIError.isUsageBackedContextOverflow(message, contextWindow)) return false;
+		// Judge the text alone: a provider that attached the overflow flag itself keeps compaction.
+		const textEvidence = {
+			stopReason: message.stopReason,
+			errorMessage: message.errorMessage,
+			errorStatus: message.errorStatus,
+		};
+		if (!AIError.isContextOverflow(textEvidence)) return false;
+		return this.#host.contextFitsModel(model, message);
 	}
 
 	/**
@@ -3100,6 +3244,7 @@ export class TurnRecovery {
 		// Tool loops already own their live context. Leave a larger fallback in
 		// place when restoring would require pre-prompt context maintenance.
 		if (options?.requireContextFit && !this.#host.contextFitsModel(primaryModel)) return false;
+		if (cfgOffline.get(this.#host.settings) && primaryModel.provider !== currentModel.provider) return false;
 		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, this.#host.sessionId());
 		if (!apiKey) return false;
 
@@ -3128,7 +3273,8 @@ export class TurnRecovery {
 		// form (account resets, retry-after-ms, legacy retry-after /
 		// x-ratelimit-reset text) by longest-wins, so a shorter reset phrase
 		// can never shadow a longer retry signal carried in the same message.
-		return extractProviderRetryHint(this.#host.model()?.provider, errorMessage);
+		const model = this.#host.model();
+		return extractProviderRetryHint(model?.provider, errorMessage, model?.baseUrl);
 	}
 
 	/**
@@ -3410,6 +3556,7 @@ export class TurnRecovery {
 					await this.#host.modelRegistry.authStorage.limits.rotate(currentModel.provider, this.#host.sessionId(), {
 						error: errorMessage,
 						modelId: currentModel.id,
+						baseUrl: currentModel.baseUrl,
 						signal: rotateAbortController.signal,
 						waitForSibling: rotationsRemaining > 0,
 					})
@@ -3495,16 +3642,10 @@ export class TurnRecovery {
 		// by the stated wait so an unrelated large backoff cannot sneak
 		// through.
 		const maxDelayMs = retrySettings.maxDelayMs;
-		// An account out of money has no reset to wait for: the QUOTA_EXHAUSTED
-		// heuristic backoff is a guess at a clock that does not exist, and a
-		// `retry.maxDelayMs` set at or above it (the 30-minute default ceiling
-		// users raise) would sleep through the whole guess. Surface the provider
-		// error instead, so the user tops up and the error frame's Retry
-		// re-attempts at once rather than idling in a retry the session cannot
-		// finish.
-		const billingCap = isBillingCapUsageLimit(message.errorStatus, errorMessage);
+		// An out-of-credit account has no reset to wait for. Even when the
+		// 30-minute quota heuristic fits the cap, only a fallback can recover it.
+		const billingCap = !staleUsageLimit && isBillingCapUsageLimit(message.errorStatus, errorMessage);
 		const exceedsDelayCap = (waitMs: number): boolean => {
-			if (billingCap && !staleUsageLimit) return true;
 			const waitForUsageReset =
 				retrySettings.waitForUsageReset === true &&
 				recordedUsageLimitOutcome !== undefined &&
@@ -3514,9 +3655,62 @@ export class TurnRecovery {
 			return maxDelayMs > 0 && waitMs > maxDelayMs && !waitForUsageReset;
 		};
 
-		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
+		// A `reasoning_extraction` refusal of a request that replayed other models'
+		// reasoning as text: resend it once on this model without that reasoning,
+		// and leave it out for the rest of the session, before walking the chain.
+		// A refusal of a request that carried none would only be refused again.
+		const sessionId = this.#host.sessionManager.getSessionId();
+		const stripDemotedReasoning =
+			classifierRefusal &&
+			!retryBudgetExhausted &&
+			message.stopDetails?.category === "reasoning_extraction" &&
+			(message.demotedReasoningBlocks ?? 0) > 0 &&
+			currentModel !== undefined &&
+			resolveCatalogPolicy(currentModel).classifierCotExtraction === true &&
+			this.#demotedReasoningOmittedFor !== sessionId;
+		if (stripDemotedReasoning) {
+			this.#demotedReasoningOmittedFor = sessionId;
+			delayMs = 0;
+			logger.info("Classifier refused other models' reasoning replayed as text; retrying without it", {
+				model: `${currentModel.provider}/${currentModel.id}`,
+				demotedReasoningBlocks: message.demotedReasoningBlocks,
+			});
+		}
+
+		// A `reasoning_extraction` refusal that stopped output already streaming judged
+		// that sample, not the request: the same request on this model answers on the
+		// next try. Resample once per turn before walking the chain; a second refusal
+		// takes the existing path.
+		const resampleMidStreamRefusal =
+			classifierRefusal &&
+			!retryBudgetExhausted &&
+			!stripDemotedReasoning &&
+			!this.#midStreamRefusalResampled &&
+			message.stopDetails?.category === "reasoning_extraction" &&
+			message.content.some(
+				block =>
+					block.type === "toolCall" ||
+					(block.type === "thinking" && hasNonWhitespace(block.thinking)) ||
+					(block.type === "text" && hasNonWhitespace(block.text)),
+			);
+		if (resampleMidStreamRefusal) {
+			this.#midStreamRefusalResampled = true;
+			delayMs = 0;
+			logger.info("Classifier refused a turn mid-stream; resampling it on the same model", {
+				model: currentModel ? `${currentModel.provider}/${currentModel.id}` : undefined,
+			});
+		}
+
+		if (
+			!staleOpenAIResponsesReplayError &&
+			!switchedCredential &&
+			!stripDemotedReasoning &&
+			!resampleMidStreamRefusal &&
+			currentSelector
+		) {
 			// The retry budget bounds same-model retries against a failing provider. A
-			// classifier refusal is not that: retrying the same model reproduces it, and
+			// classifier refusal is not that: retrying the same model reproduces a refusal
+			// of the request itself (the mid-stream kind is resampled above), and
 			// the next model in the chain is one request away and often answers. Stopping
 			// the walk at the budget ends the turn with models left untried.
 			//
@@ -3537,7 +3731,7 @@ export class TurnRecovery {
 				!thinkingLoop &&
 				!websocketConnectionLimit &&
 				!sameModelSteerReplay &&
-				!waitForSiblingCredential &&
+				(!waitForSiblingCredential || billingCap) &&
 				!refusalWalkRepeats &&
 				!sameModelStreamReplay
 			) {
@@ -3578,6 +3772,7 @@ export class TurnRecovery {
 							(options?.fireworksFastFallback || options?.hardErrorFallback) &&
 							!this.isRetryableError(message)
 						) &&
+						!billingCap &&
 						!exceedsDelayCap(
 							usageLimitWaitMs === undefined && parsedRetryAfterMs && parsedRetryAfterMs > delayMs
 								? parsedRetryAfterMs
@@ -3623,7 +3818,13 @@ export class TurnRecovery {
 				this.#genericAbortStreak = 0;
 			}
 		}
-		if ((classifierRefusal || accountPolicyDenial) && !switchedCredential && !switchedModel) {
+		if (
+			(classifierRefusal || accountPolicyDenial) &&
+			!switchedCredential &&
+			!switchedModel &&
+			!stripDemotedReasoning &&
+			!resampleMidStreamRefusal
+		) {
 			// A prior attempt in this saga already announced `auto_retry_start`
 			// (retryAttempt was incremented for each call to this method, so > 1
 			// means at least one earlier attempt started the loop) but this
@@ -3664,7 +3865,7 @@ export class TurnRecovery {
 		}
 
 		// The fail-fast cap (`exceedsDelayCap`, defined above the chain consult).
-		if (exceedsDelayCap(delayMs) && !switchedCredential && !switchedModel) {
+		if (!switchedCredential && !switchedModel && (billingCap || exceedsDelayCap(delayMs))) {
 			const attempt = this.#retryAttempt;
 			this.#retryAttempt = 0;
 			await this.#closeRetrySaga(
@@ -3675,7 +3876,7 @@ export class TurnRecovery {
 					// money — so the message the user acts on is the provider's own.
 					finalError: billingCap
 						? errorMessage
-						: `Provider requested ${Math.ceil(delayMs)}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
+						: `${delayMs === parsedRetryAfterMs ? "Provider requested" : "Retry requires"} ${Math.ceil(delayMs)}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
 				},
 				{ terminalTurn: message },
 			);
@@ -3791,14 +3992,15 @@ export class TurnRecovery {
 	 */
 	#stripFailedAssistantTail(): void {
 		const messages = this.#host.agent.state.messages;
-		const tail = messages[messages.length - 1];
+		const index = lastContextIndex(messages);
+		const tail = messages[index];
 		if (tail?.role !== "assistant") return;
 		if (tail.stopReason !== "error" && tail.stopReason !== "aborted") return;
 		logger.debug("agent active context failed assistant tail stripped positionally", {
 			stopReason: tail.stopReason,
 			timestamp: tail.timestamp,
 		});
-		this.#host.agent.replaceMessages(messages.slice(0, -1));
+		this.#host.agent.replaceMessages(messages.toSpliced(index, 1));
 	}
 
 	/**
@@ -3992,6 +4194,8 @@ export class TurnRecovery {
 	 * A restored session deliberately omits failed assistant turns from provider
 	 * context. In that case, the persisted display transcript remains the source
 	 * of truth for whether the current branch has a retryable failed tail.
+	 * `prunedTerminalFailure` retains a live failure omitted from both histories;
+	 * its context is already ready for continuation and must not be stripped again.
 	 *
 	 * When the failure is a fully failed/aborted tool batch with complete
 	 * arguments (see {@link toolReplayStart}), the retry strips the failed
@@ -4002,11 +4206,11 @@ export class TurnRecovery {
 	 *
 	 * @returns true if retry was initiated, false if no failed turn to retry or agent is busy
 	 */
-	async retry(): Promise<boolean> {
+	async retry(prunedTerminalFailure?: AssistantMessage): Promise<boolean> {
 		if (this.#host.isStreaming() || this.#host.isCompacting() || this.isRetrying) return false;
 
 		const messages = this.#host.agent.state.messages;
-		const activeTurnEnd = retryableAssistantTurnEnd(messages);
+		const activeTurnEnd = prunedTerminalFailure ? undefined : retryableAssistantTurnEnd(messages);
 		if (activeTurnEnd !== undefined) {
 			const replayStart = toolReplayStart(messages);
 			if (replayStart !== undefined) {
@@ -4020,7 +4224,7 @@ export class TurnRecovery {
 					...messages.slice(conversationEnd(messages)),
 				]);
 			}
-		} else {
+		} else if (!prunedTerminalFailure) {
 			// A restored session already dropped the failed assistant turn (and its
 			// paired synthetic tool results) from provider context, so the persisted
 			// display transcript is the source of truth for a retryable failed tail.

@@ -71,6 +71,15 @@ export class IrcBridge {
 		return this.#asides.some(record => !this.#nonInterruptingAsides.has(record));
 	}
 
+	/**
+	 * Whether a queued record wakes a turn once the session idles. Parked deferred wakes do
+	 * not: they wait for a turn of their own after the driven run or pooled contract that
+	 * parked them.
+	 */
+	hasWakeable(): boolean {
+		return this.#interrupts.length > 0 || this.#asides.length > 0;
+	}
+
 	/** Whether any undelivered IRC record remains queued. */
 	hasPending(): boolean {
 		return (

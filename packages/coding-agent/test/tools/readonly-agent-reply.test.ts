@@ -39,8 +39,7 @@ function readOnlySession(): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
-		// xdev off: prove the reply transport does not ride the xd:// one.
-		settings: Settings.isolated({ "tools.xdev": false }),
+		settings: Settings.isolated(),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		getAgentId: () => "ReadOnlyWorker",
@@ -117,7 +116,7 @@ describe("read-only agent reply via write agent://", () => {
 
 	it("still grants the agent-only write when externalThinking appends think to the plan", async () => {
 		const session = readOnlySession();
-		session.settings = Settings.isolated({ "tools.xdev": false, externalThinking: true });
+		session.settings = Settings.isolated({ externalThinking: true });
 		const model = getBundledModel("anthropic", "claude-fable-5");
 		session.getActiveModel = () => model;
 		const tools = await createTools(session, [...READ_ONLY_AGENT_TOOLS]);
@@ -131,7 +130,6 @@ describe("read-only agent reply via write agent://", () => {
 		const tools = await createTools(session, [...READ_ONLY_AGENT_TOOLS]);
 		expect(tools.map(tool => tool.name)).not.toContain("write");
 		expect(session.agentOnlyWrite).toBeUndefined();
-		expect(session.deviceOnlyWrite).toBeUndefined();
 	});
 
 	it("does not mount write for a list with a mutating tool", async () => {

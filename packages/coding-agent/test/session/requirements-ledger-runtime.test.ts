@@ -2190,7 +2190,7 @@ describe("requirement image audit inputs", () => {
 	it("forwards referenced image sha256 and artifact path to qa-auditor", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
-			manager.adoptArtifactManager({ dir: join(cwd, "artifacts") } as never);
+			manager.adoptArtifactManager({ sessionDir: join(cwd, "artifacts") } as never);
 			mkdirSync(join(cwd, "artifacts"), { recursive: true });
 			const data = Buffer.from("stub image pixels").toString("base64");
 			const sha256 = createHash("sha256").update(Buffer.from(data, "base64")).digest("hex");

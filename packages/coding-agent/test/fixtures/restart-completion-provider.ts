@@ -53,7 +53,7 @@ const { session } = await createAgentSession({
 	enableMCP: false,
 	enableLsp: false,
 	skipPythonPreflight: true,
-	cacheWarming: false,
+	cacheWarming: "off",
 	toolNames: [],
 	restrictToolNames: true,
 });

@@ -139,6 +139,57 @@ describe("quarantine salvages stored credentials", () => {
 		}
 	});
 
+	test("a damaged non-text disabled cause keeps the credential disabled", async () => {
+		const db = new Database(dbPath);
+		try {
+			db.run(
+				"CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT)",
+			);
+			db.run("INSERT INTO auth_credentials VALUES (1, 'active', 'api_key', ?, NULL)", [
+				JSON.stringify({ key: "sk-active" }),
+			]);
+			db.run("INSERT INTO auth_credentials VALUES (2, 'revoked', 'api_key', ?, X'01')", [
+				JSON.stringify({ key: "sk-revoked" }),
+			]);
+		} finally {
+			db.close();
+		}
+		tearHeader(dbPath);
+		const store = await SqliteAuthCredentialStore.open(dbPath);
+		try {
+			expect(storedKeys(store)).toEqual({ active: "sk-active" });
+			expect((await store.listDisabledCredentials()).map(row => row.provider)).toEqual(["revoked"]);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("local-provider markers and retired provider ids survive the recovery", async () => {
+		await seedStore();
+		const seeded = new Database(dbPath);
+		try {
+			seeded.run("INSERT INTO auth_broker_local_providers (provider, created_at) VALUES ('deepseek', 1)");
+			// A login stored by a build from before the provider split.
+			seeded.run(
+				"INSERT INTO auth_credentials (provider, credential_type, data, identity_key) VALUES ('singularityapi', 'api_key', ?, 'legacy')",
+				[JSON.stringify({ type: "api_key", key: "sk-sapi-fixture" })],
+			);
+			seeded.run("PRAGMA wal_checkpoint(TRUNCATE)");
+		} finally {
+			seeded.close();
+		}
+		tearHeader(dbPath);
+		vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const store = await SqliteAuthCredentialStore.open(dbPath);
+		try {
+			expect(store.listBrokerLocalProviders()).toEqual(["deepseek"]);
+			expect(storedKeys(store)["singularityapi-dev"]).toBe("sk-sapi-fixture");
+			expect(storedKeys(store).singularityapi).toBeUndefined();
+		} finally {
+			store.close();
+		}
+	});
+
 	test("a failed salvage is a loud error naming the quarantined path, never a throw", async () => {
 		fs.writeFileSync(dbPath, Buffer.alloc(8192, 0x41));
 		vi.spyOn(logger, "warn").mockImplementation(() => {});

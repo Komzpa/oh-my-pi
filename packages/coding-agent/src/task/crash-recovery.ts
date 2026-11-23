@@ -138,7 +138,6 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 						agent: persistedAgentDefinition(ref.displayName, init),
 						message: init.task,
 						restore: true,
-						structured: init.tools.includes("yield"),
 						workPoolYieldItems: init.workPoolYieldItems,
 						outputSchema: init.outputSchema,
 						outputSchemaMode: init.outputSchemaMode,

@@ -2,7 +2,7 @@
  * Hindsight memory backend.
  *
  * Wires the per-session lifecycle (recall on first turn, retain every Nth
- * agent_end, etc.) on top of the AgentSession event stream. Hindsight runtime
+ * finished model turn, etc.) on top of the AgentSession event stream. Hindsight runtime
  * state is owned by the AgentSession so lifetime follows the actual domain
  * owner instead of a parallel session-id registry.
  */
@@ -10,7 +10,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
-import { memoryToolRefs } from "../memory-backend/tool-names";
 import type { MemoryBackend, MemoryBackendStartOptions, MemoryPromptPreparation } from "../memory-backend/types";
 import hindsightInstructions from "../prompts/system/hindsight-instructions.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
@@ -77,11 +76,11 @@ export const hindsightBackend: MemoryBackend = {
 		await installPrimaryState(session, settings, new Set());
 	},
 
-	async buildDeveloperInstructions(_agentDir, _cwd, settings, session): Promise<string | undefined> {
+	async buildDeveloperInstructions(_agentDir, _cwd, settings, _session): Promise<string | undefined> {
 		const config = loadHindsightConfig(settings);
 		if (!isHindsightConfigured(config)) return undefined;
 
-		return prompt.render(hindsightInstructions, { toolRefs: memoryToolRefs(session?.getXdevToolEntries()) });
+		return prompt.render(hindsightInstructions);
 	},
 
 	conversationScope(session) {

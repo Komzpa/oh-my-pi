@@ -494,7 +494,7 @@ for (const { scenario, contract } of [
 					: scenario === "auth fallback"
 						? allowedSelector
 						: "@task",
-			modelPatternAuthFallback: scenario === "auth fallback" ? bannedSelector : undefined,
+			modelPatternParentFallback: scenario === "auth fallback" ? bannedSelector : undefined,
 		});
 		if (scenario === "explicit concrete") {
 			await expect(creation).rejects.toThrow("fixture safety ban");
@@ -598,7 +598,7 @@ test("a banned advisor roster entry stays unavailable without disabling the perm
 			{ name: "Denied", model: bannedSelector },
 			{ name: "Permitted", model: allowedSelector },
 		],
-		advisorTools: [],
+		advisorTools: { names: () => [], create: () => ({ tools: [] }) },
 		advisorStreamFn: (model, context, options) => {
 			requested.push(model.id);
 			return advisor.stream(model, context, options);

@@ -97,7 +97,7 @@ async function baselineSource(): Promise<string> {
 	const sourceRoot = path.resolve(dir.path());
 	await fs.symlink(path.join(ROOT, "node_modules"), path.join(sourceRoot, "node_modules"), "dir");
 	const repo = vcs.requireGit(ROOT);
-	const files = await repo.lsTree(BASELINE, [EXTENSIONS]);
+	const files = (await repo.lsTree(BASELINE, [EXTENSIONS])).map(entry => entry.path);
 	for (const file of files) {
 		if (!/\.(ts|md|json)$/.test(file) || file.endsWith(".test.ts") || file.includes("/fixtures/")) continue;
 		const blob = await repo.showBlob(`${BASELINE}:${file}`, 4 * 1024 * 1024);

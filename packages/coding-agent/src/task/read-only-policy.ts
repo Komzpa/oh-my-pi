@@ -23,8 +23,14 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"rewind",
 ]);
 
+// Harness tools the session presents on its own (Auto-QA `report_issue`). They touch
+// no checkout, so a snapshot of a read-only session's enabled set (e.g. a `/tan`
+// clone) that carries them stays read-only.
+const HARNESS_PRESENTED_TOOL_NAMES: ReadonlySet<string> = new Set(["report_issue"]);
+
 export function isReadOnlyToolNames(tools: readonly string[] | undefined): boolean {
-	return !!tools?.length && tools.every(tool => READ_ONLY_TOOL_NAMES.has(tool));
+	const declared = tools?.filter(tool => !HARNESS_PRESENTED_TOOL_NAMES.has(tool));
+	return !!declared?.length && declared.every(tool => READ_ONLY_TOOL_NAMES.has(tool));
 }
 
 export function isReadOnlyAgent(agent: AgentDefinition): boolean {

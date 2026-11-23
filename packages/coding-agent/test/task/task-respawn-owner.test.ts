@@ -182,7 +182,6 @@ describe("task respawn keeps the TODO owner linked", () => {
 		} as unknown as AgentSession;
 		attachIrcWakeTurnMonitor(worker, {
 			id: "CoolingTrunksBuild-8",
-			structured: false,
 			agent: { name: "task", description: "Task", systemPrompt: "Run", source: "bundled" },
 			eventBus: session.eventBus,
 		});

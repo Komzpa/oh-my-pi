@@ -2,6 +2,7 @@ import { clearSubmittedText, restoreDetachedDraft } from "./helpers/draft";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { COLLAB_GUEST_ALLOWED_COMMANDS } from "../collab/guest";
 import { BUILTIN_COLLABORATION_SLASH_COMMANDS } from "./builtin-collaboration";
+import { BUILTIN_COMMIT_SLASH_COMMANDS } from "./builtin-commit";
 import {
 	buildArgumentCompletions,
 	buildDirectoryArgumentCompletions,
@@ -46,6 +47,7 @@ function getBuiltinSlashCommandRegistry(): ReadonlyArray<SlashCommandSpec> {
 		...BUILTIN_MODE_SLASH_COMMANDS,
 		...BUILTIN_COLLABORATION_SLASH_COMMANDS,
 		...BUILTIN_SESSION_SLASH_COMMANDS,
+		...BUILTIN_COMMIT_SLASH_COMMANDS,
 		...BUILTIN_LIFECYCLE_SLASH_COMMANDS,
 		...BUILTIN_MARKETPLACE_SLASH_COMMANDS,
 		...BUILTIN_SKILLS_SLASH_COMMANDS,

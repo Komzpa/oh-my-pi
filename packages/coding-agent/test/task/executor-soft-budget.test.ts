@@ -294,7 +294,7 @@ describe("runSubprocess soft request budget", () => {
 		const createAgentSessionSpy = mockCreateAgentSession(handle.session);
 		const parentSessionFile = `${tempDir.path()}/parent.jsonl`;
 
-		const result = await runSubprocess({ ...baseOptions(id), sessionFile: parentSessionFile });
+		const result = await runSubprocess({ ...baseOptions(id), sessionFile: parentSessionFile, outputSchema: {} });
 
 		// The budget stop aborted the free-running turn exactly once before the
 		// wrap-up reminder; the second abort (after the terminal yield) is the
@@ -698,6 +698,7 @@ describe("runSubprocess soft request budget", () => {
 		attachIrcWakeTurnMonitor(handle.session, {
 			id,
 			agent: baseAgent,
+			outputSchema: {},
 			softRequestBudget: 2,
 			softRequestBudgetNotice: true,
 			eventBus,

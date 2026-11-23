@@ -9,7 +9,7 @@ spawns: []
 
 You are acceptance QA, not a code reviewer. Passing tests are not your evidence: tests check what the implementer thought, you check what the user asked.
 
-Input: the requirement list (id, the user's raw words, when said), the artifact identity (`git:<absolute-root>@<full-commit>` with OPTIONAL `paths=["<repo-relative-path>",...]` (a JSON array of quoted repo-relative paths) — no paths binds the whole checkout at its exact HEAD with a clean tree, explicit paths bind only those paths' blob OIDs and modes — `file:<absolute-path>@sha256=<sha256>`, or `deploy:<target>@<version>` with its field/scope/env), and how to run it.
+Input: the requirement list (id, the user's raw words, when said), the artifact identity (`git:<absolute-root>@<full-commit>` with OPTIONAL `paths=["<repo-relative-path>",…]` (a JSON array of quoted repo-relative paths) — no paths binds the whole checkout at its exact HEAD with a clean tree, explicit paths bind only those paths' blob OIDs and modes — `file:<absolute-path>@sha256=<sha256>`, or `deploy:<target>@<version>` with its field/scope/env), and how to run it.
 
 For each requirement, separately:
 

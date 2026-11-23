@@ -153,9 +153,9 @@ describe("read speculation assessment", () => {
 		const context = { toolCall, args, effect: assessment.effect };
 
 		await tool.speculation.finalized?.execute(context, new AbortController().signal);
-		expect(session.editStore).toBeUndefined();
+		expect(session.state?.editStore).toBeUndefined();
 		await tool.speculation.finalized?.discard?.({ ...context, reason: "candidate discarded" });
-		expect(session.editStore).toBeUndefined();
+		expect(session.state?.editStore).toBeUndefined();
 	});
 
 	it("does not retain provenance when discard wins the read race", async () => {
@@ -173,7 +173,7 @@ describe("read speculation assessment", () => {
 		const outcome = await outcomePromise;
 		await tool.speculation.finalized?.commit?.({ ...context, physicalOutcome: outcome }, outcome);
 
-		expect(session.editStore).toBeUndefined();
+		expect(session.state?.editStore).toBeUndefined();
 	});
 
 	it("merges speculative read provenance only when the candidate commits", async () => {
@@ -187,7 +187,7 @@ describe("read speculation assessment", () => {
 		const outcome = await tool.speculation.finalized?.execute(context, new AbortController().signal);
 		if (!outcome) throw new Error("expected speculative read outcome");
 
-		expect(session.editStore).toBeUndefined();
+		expect(session.state?.editStore).toBeUndefined();
 		await tool.speculation.finalized?.commit?.({ ...context, physicalOutcome: outcome }, outcome);
 		const absolutePath = fs.realpathSync(path.join(testDir, "plain.txt"));
 		const store = getEditStore(session);

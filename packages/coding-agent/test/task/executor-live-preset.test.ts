@@ -74,7 +74,6 @@ async function fixture() {
 			settings,
 			modelRegistry: registry,
 			authStorage: auth,
-			structured: false,
 			noContextFiles: true,
 			skills: [],
 			rules: [],

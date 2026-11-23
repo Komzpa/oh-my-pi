@@ -23,6 +23,7 @@ export interface VcsError extends Error {
 	code:
 		| "NotARepository"
 		| "RefNotFound"
+		| "HeadMoved"
 		| "ObjectNotFound"
 		| "EmptyCherryPick"
 		| "Conflict"

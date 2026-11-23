@@ -93,6 +93,10 @@ function makeTestSession(
 		get isStreaming() {
 			return streaming;
 		},
+		// The registry counts an open run (upstream isRunning reads runStartedAt).
+		get runStartedAt() {
+			return streaming ? 1 : undefined;
+		},
 		deliverRestartContinuation: async (requestId: string, content: string) => {
 			manager.appendCustomMessageEntry("restart-root-continuation", content, true, { requestId });
 			await manager.flush();

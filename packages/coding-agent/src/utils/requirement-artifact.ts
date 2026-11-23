@@ -952,7 +952,10 @@ export async function freezeRequirementIdentityScope(identity: RequirementIdenti
 	const { revision, base } = await requirementArtifactBase(identity);
 	const repo = await identityGitRepo(identity.repo);
 	const paths =
-		identity.paths ?? (base ? await repo.changedFiles({ base, head: revision }) : await repo.lsTree(revision, []));
+		identity.paths ??
+		(base
+			? await repo.changedFiles({ base, head: revision })
+			: (await repo.lsTree(revision, [])).map(entry => entry.path));
 	const roundTrip = parseRequirementIdentity(
 		formatRequirementIdentity({ ...identity, commit: revision, ...(base ? { base } : {}), paths }),
 	);
@@ -1030,7 +1033,7 @@ export async function requirementTouchesRenderedFiles(identities: readonly Requi
 		const { revision, base } = await requirementArtifactBase(identity);
 		const files = base
 			? await repo.changedFiles({ base, head: revision, files: identity.paths })
-			: await repo.lsTree(identity.commit, identity.paths ?? []);
+			: (await repo.lsTree(identity.commit, identity.paths ?? [])).map(entry => entry.path);
 		if (files.some(isRenderedRequirementPath)) return true;
 	}
 	return false;

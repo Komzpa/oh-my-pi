@@ -18,6 +18,7 @@ describe("fenced async storage publication", () => {
 		}
 		await new EpermStorage().writeTextAtomic(file, "new\n", { expectedSize: 4, fencedAsyncPublish: true });
 		expect(await Bun.file(file).text()).toBe("new\n");
-		expect(await fs.readdir(temp.path())).toEqual(["journal.jsonl"]);
+		// The native lock keeps a `.lock.os` sidecar on Linux since upstream 0b01bf120472; it is not a backup.
+		expect((await fs.readdir(temp.path())).filter(name => !name.endsWith(".lock.os"))).toEqual(["journal.jsonl"]);
 	});
 });

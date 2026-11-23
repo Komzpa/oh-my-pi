@@ -18,7 +18,12 @@
  *   spans (`` `…` ``) are preserved verbatim so technical examples like
  *   `npm install @types/node` survive intact.
  * - Recursive imports are followed up to {@link MAX_AT_IMPORT_DEPTH} hops;
- *   cycles are broken silently.
+ *   cycles are broken silently. A file that is imported more than once is
+ *   expanded at every occurrence — only an import pointing back into the
+ *   current import chain counts as a cycle. Output therefore grows with
+ *   fan-out raised to the depth: a file that imports the next one N times
+ *   per level yields up to N^{@link MAX_AT_IMPORT_DEPTH} copies of the
+ *   deepest file. A shared expansion budget also caps total file reads.
  * - When the referenced file cannot be read, the original `@token` is
  *   left untouched and a debug log is emitted.
  *
@@ -33,6 +38,9 @@ import { readFile } from "../capability/fs";
 
 /** Maximum number of recursive `@`-import hops. Matches Claude Code's documented cap. */
 export const MAX_AT_IMPORT_DEPTH = 5;
+
+/** Maximum number of successfully expanded imports in one top-level document. */
+export const MAX_AT_IMPORT_EXPANSIONS = 256;
 
 /**
  * Matches a candidate `@import` token: a leading boundary (start-of-string
@@ -83,9 +91,10 @@ export async function expandAtImports(
 	const maxDepth = options.maxDepth ?? MAX_AT_IMPORT_DEPTH;
 	const home = options.home ?? os.homedir();
 	const absoluteSource = path.resolve(filePath);
-	const visited = new Set<string>([absoluteSource]);
+	const chain: string[] = [absoluteSource];
+	const budget = { remaining: MAX_AT_IMPORT_EXPANSIONS };
 	const loadedFiles = options.loadedFiles;
-	return await expand(content, path.dirname(absoluteSource), 0, maxDepth, home, visited, loadedFiles);
+	return await expand(content, path.dirname(absoluteSource), 0, maxDepth, home, chain, budget, loadedFiles);
 }
 
 async function expand(
@@ -94,7 +103,8 @@ async function expand(
 	depth: number,
 	maxDepth: number,
 	home: string,
-	visited: Set<string>,
+	chain: readonly string[],
+	budget: { remaining: number },
 	loadedFiles?: Map<string, string>,
 ): Promise<string> {
 	if (depth >= maxDepth) return content;
@@ -106,7 +116,7 @@ async function expand(
 			out.push(segment.text);
 			continue;
 		}
-		out.push(await expandTextSegment(segment.text, baseDir, depth, maxDepth, home, visited, loadedFiles));
+		out.push(await expandTextSegment(segment.text, baseDir, depth, maxDepth, home, chain, budget, loadedFiles));
 	}
 	return out.join("");
 }
@@ -117,12 +127,13 @@ async function expandTextSegment(
 	depth: number,
 	maxDepth: number,
 	home: string,
-	visited: Set<string>,
+	chain: readonly string[],
+	budget: { remaining: number },
 	loadedFiles?: Map<string, string>,
 ): Promise<string> {
 	const lines = text.split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		lines[i] = await expandLine(lines[i], baseDir, depth, maxDepth, home, visited, loadedFiles);
+		lines[i] = await expandLine(lines[i], baseDir, depth, maxDepth, home, chain, budget, loadedFiles);
 	}
 	return lines.join("\n");
 }
@@ -133,7 +144,8 @@ async function expandLine(
 	depth: number,
 	maxDepth: number,
 	home: string,
-	visited: Set<string>,
+	chain: readonly string[],
+	budget: { remaining: number },
 	loadedFiles?: Map<string, string>,
 ): Promise<string> {
 	if (!line.includes("@")) return line;
@@ -162,7 +174,7 @@ async function expandLine(
 	let cursor = 0;
 	for (const m of matches) {
 		parts.push(line.slice(cursor, m.start));
-		const expanded = await resolveAndExpand(m.importPath, baseDir, depth, maxDepth, home, visited, loadedFiles);
+		const expanded = await resolveAndExpand(m.importPath, baseDir, depth, maxDepth, home, chain, budget, loadedFiles);
 		parts.push(expanded ?? line.slice(m.start, m.end));
 		cursor = m.end;
 	}
@@ -176,9 +188,14 @@ async function resolveAndExpand(
 	depth: number,
 	maxDepth: number,
 	home: string,
-	visited: Set<string>,
+	chain: readonly string[],
+	budget: { remaining: number },
 	loadedFiles?: Map<string, string>,
 ): Promise<string | null> {
+	if (budget.remaining <= 0) {
+		logger.debug("@-import: expansion budget exhausted", { remaining: budget.remaining });
+		return null;
+	}
 	const resolved = resolveImportPath(importPath, baseDir, home);
 	const root = importRoot.getStore();
 	if (root) {
@@ -188,7 +205,9 @@ async function resolveAndExpand(
 			return null;
 		}
 	}
-	if (visited.has(resolved)) {
+	// Only an ancestor in the current import chain counts as a cycle. The
+	// same file imported twice from unrelated places is expanded twice.
+	if (chain.includes(resolved)) {
 		logger.debug("@-import: skipping cyclic include", { path: resolved });
 		return null;
 	}
@@ -199,11 +218,18 @@ async function resolveAndExpand(
 		return null;
 	}
 
-	// Visited is shared across the whole expansion tree to break cycles,
-	// even cycles that span multiple importing files.
 	loadedFiles?.set(resolved, content);
-	visited.add(resolved);
-	return await expand(content, path.dirname(resolved), depth + 1, maxDepth, home, visited, loadedFiles);
+	budget.remaining--;
+	return await expand(
+		content,
+		path.dirname(resolved),
+		depth + 1,
+		maxDepth,
+		home,
+		[...chain, resolved],
+		budget,
+		loadedFiles,
+	);
 }
 
 function resolveImportPath(importPath: string, baseDir: string, home: string): string {

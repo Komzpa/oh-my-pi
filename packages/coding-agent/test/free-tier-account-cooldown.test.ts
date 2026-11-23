@@ -31,8 +31,10 @@ describe("account-wide free-tier daily limit", () => {
 		authStorage.keys.setRuntime("openai", "openai-test-key");
 		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 		const models = [
-			getBundledModel("openrouter", "cohere/north-mini-code:free"),
-			getBundledModel("openrouter", "arcee-ai/trinity-mini:free"),
+			// The keyless roster regenerated in upstream 83a0015a9d13 no longer bundles the previous
+			// free pair; any two bundled free OpenRouter models exercise the account-wide limit.
+			getBundledModel("openrouter", "google/gemma-4-26b-a4b-it:free"),
+			getBundledModel("openrouter", "google/gemma-4-31b-it:free"),
 			getBundledModel("openai", "gpt-4o-mini"),
 		];
 		if (models.some(model => !model)) throw new Error("Expected bundled test models to exist");

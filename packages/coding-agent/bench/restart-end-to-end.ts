@@ -6,8 +6,9 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { isCompiledBinary, logger, setAgentDir } from "@oh-my-pi/pi-utils";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import { DAEMON_BROKER_WORKER_ARG, RESTART_SNAPSHOT_WORKER_ARG } from "../src/cli/worker-selectors";
-import { startDaemonBrokerFromEnvironment } from "../src/launch/broker";
+import { RESTART_SNAPSHOT_WORKER_ARG } from "../src/cli/worker-selectors";
+import { DAEMON_WORKER_ARG } from "../src/daemon/protocol";
+import { startDaemonFromEnvironment } from "../src/daemon/server";
 import { runRestartSnapshotWorker } from "../src/task/restart-snapshot-worker";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
@@ -19,7 +20,7 @@ import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import * as workerClient from "../src/subprocess/worker-client";
 
-if (process.argv[2] === DAEMON_BROKER_WORKER_ARG) await startDaemonBrokerFromEnvironment();
+if (process.argv[2] === DAEMON_WORKER_ARG) await startDaemonFromEnvironment();
 else if (process.argv[2] === RESTART_SNAPSHOT_WORKER_ARG) await runRestartSnapshotWorker();
 else if (process.argv[2]?.startsWith("__omp_worker_"))
 	throw new Error(`Unsupported benchmark worker ${process.argv[2]}`);

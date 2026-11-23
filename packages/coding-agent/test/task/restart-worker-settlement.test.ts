@@ -38,6 +38,8 @@ function session(
 		},
 		agent: { getPendingModelNewsCount: () => 0 },
 		isStreaming: options.wasRunning ?? false,
+		// The registry counts an open run (upstream isRunning reads runStartedAt), not streaming alone.
+		runStartedAt: options.wasRunning ? Date.now() : undefined,
 		isDisposed: false,
 		beginRestartDrain: () => ({
 			wasRunning: options.wasRunning ?? false,

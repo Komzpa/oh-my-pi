@@ -23,6 +23,7 @@ import {
 	type TodoCompletionTransition,
 	type TodoToolDetails,
 	type TodoPersistedEdit,
+	todoTaskTargets,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	todoNeedsOwnerDecision,
@@ -268,7 +269,9 @@ const todoSchema = type({
 		"user-owned pending check for block: exact action and optional card or other ids",
 	),
 	"list?": InitListEntry.array().describe("phases for init"),
-	"task?": type("string").describe("verbatim task content; with view, show that task and its full attempt history"),
+	"task?": type("string | string[]").describe(
+		"verbatim task content; array targets several (not start); with view, show that task and its full attempt history",
+	),
 	"phase?": type("string").describe("phase name; with view, lists that whole phase including closed rows"),
 	"archive?": type("boolean").describe("with view, include archived rows"),
 	"previewReason?": type({
@@ -290,8 +293,30 @@ const todoSchema = type({
 	),
 }).describe("apply a single todo operation");
 
-type TodoParams = TodoSchema;
 type TodoSchema = typeof todoSchema.infer;
+/** Internal single-target form: array and flattened `task` targets are expanded to `task` + `items` first. */
+type TodoParams = Omit<TodoSchema, "task"> & { task?: string };
+
+/**
+ * Expand a multi-target `task` (array, or a string flattening several tasks) into
+ * the single `task` plus `items` batch the operations consume. `start` takes one task.
+ */
+function expandTaskTargets<T extends { op?: unknown; task?: unknown; items?: unknown }>(
+	phases: TodoPhase[],
+	params: T,
+): T | string {
+	if (params.task === undefined) return params;
+	const contents = todoTaskTargets(phases, params.task as string | string[]);
+	if (params.op === "start" && contents.length > 1) {
+		return "start takes a single task: only one task can be in progress";
+	}
+	const { task: _task, ...rest } = params;
+	if (contents.length === 0) return rest as T;
+	const extra = contents.slice(1);
+	const items =
+		extra.length > 0 ? [...extra, ...(Array.isArray(params.items) ? (params.items as string[]) : [])] : params.items;
+	return { ...rest, task: contents[0], ...(items === undefined ? {} : { items }) } as T;
+}
 
 /** A single todo op entry (the params object itself). */
 type TodoOpEntryValue = TodoParams;
@@ -2196,7 +2221,14 @@ function getBatchTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: s
 function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoItem[] {
 	// #41: `done`/`drop` select exact batch rows from `items`; all other
 	// targeting keeps base selection.
-	if ((entry.op === "done" || entry.op === "drop") && entry.items !== undefined) {
+	if (
+		(entry.op === "done" ||
+			entry.op === "drop" ||
+			entry.op === "rm" ||
+			entry.op === "block" ||
+			entry.op === "unblock") &&
+		entry.items !== undefined
+	) {
 		return selectCompletionBatchTargets(phases, entry, errors);
 	}
 	if (entry.task) {
@@ -2207,7 +2239,8 @@ function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: st
 		const phase = resolvePhaseOrError(phases, entry.phase, errors);
 		return phase ? [...phase.tasks] : [];
 	}
-	return phases.flatMap(phase => phase.tasks);
+	errors.push(`${entry.op} needs a task, items or a phase`);
+	return [];
 }
 
 /** Enforce structural limits only; the prompt guides external-gate semantics. */
@@ -2310,11 +2343,18 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 			}
 		}
 	};
-	if (entry.task) {
-		const hit = resolveTaskOrError(phases, entry.task, errors);
-		if (!hit) return phases;
-		hit.phase.tasks = hit.phase.tasks.filter(candidate => candidate !== hit.task);
-		pruneDependencies(new Set([hit.task.content]));
+	const names = entry.task ? [entry.task, ...(entry.items ?? [])] : (entry.items ?? []);
+	if (names.length > 0) {
+		const hits = names.flatMap(name => {
+			const hit = resolveTaskOrError(phases, name, errors);
+			return hit ? [hit] : [];
+		});
+		const removed = new Set<string>();
+		for (const hit of hits) {
+			hit.phase.tasks = hit.phase.tasks.filter(candidate => candidate !== hit.task);
+			removed.add(hit.task.content);
+		}
+		pruneDependencies(removed);
 		return phases;
 	}
 	if (entry.phase) {
@@ -2325,11 +2365,7 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 		pruneDependencies(removed);
 		return phases;
 	}
-	const removed = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
-	for (const phase of phases) {
-		phase.tasks = [];
-	}
-	pruneDependencies(removed);
+	errors.push("rm needs a task, items or a phase");
 	return phases;
 }
 
@@ -2900,6 +2936,15 @@ function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: boolean):
  * `{list:[...]}` with no op). Anything else returns the schema error text
  * for a normal model retry.
  */
+/** Execute-time args are expanded before validation; a replayed array target keeps its first entry. */
+function narrowTaskTarget(params: TodoSchema): TodoOpEntryValue {
+	if (params.task === undefined) return params as TodoOpEntryValue;
+	// No explicit `task: undefined`: a persisted edit re-validates on replay, and the
+	// schema rejects an optional key present as undefined.
+	const task = Array.isArray(params.task) ? params.task[0] : params.task;
+	return { ...params, task };
+}
+
 function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntryValue | string {
 	// Tool arguments cannot establish user authority over the goal deadline.
 	if (isRecord(raw)) {
@@ -2909,12 +2954,12 @@ function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntr
 			return "The deadline belongs to the user. Todo operations cannot change the due time. Re-plan the work to fit the existing deadline.";
 	}
 	const direct = todoSchema(raw);
-	if (!(direct instanceof type.errors)) return direct;
+	if (!(direct instanceof type.errors)) return narrowTaskTarget(direct);
 	if (isRecord(raw) && raw.op === undefined) {
 		const inferred = inferTodoOp(raw, hasExistingPhases);
 		if (inferred) {
 			const repaired = todoSchema({ ...raw, op: inferred });
-			if (!(repaired instanceof type.errors)) return repaired;
+			if (!(repaired instanceof type.errors)) return narrowTaskTarget(repaired);
 		}
 	}
 	return `Invalid todo arguments: ${direct.summary}`;
@@ -3624,6 +3669,15 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 			);
 		}
 		const storage = this.session.getSessionFile() ? "session" : "memory";
+		const expanded = expandTaskTargets(previousPhases, params);
+		if (typeof expanded === "string") {
+			return {
+				content: [{ type: "text", text: expanded }],
+				details: { phases: previousPhases, storage },
+				isError: true,
+			};
+		}
+		params = expanded;
 		const rawOp: unknown = params.op;
 		if (rawOp === "classify") return this.#classify(params, previousPhases, storage);
 		if (rawOp === "done") {

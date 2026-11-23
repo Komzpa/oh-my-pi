@@ -28,6 +28,7 @@ import {
 	pickDefaultAvailableModel,
 	resolveExplicitModelRole,
 	resolveModelRoleValue,
+	scopeAllowList,
 } from "./model-resolver";
 import { cfgModelPresets, cfgModelRoles, cfgModelRoleStorage, type ModelPreset } from "./model-settings";
 import { type AnySetting, lookup as lookupSetting } from "./registry";
@@ -286,8 +287,8 @@ export function restoreSessionModelPreset(
 }
 
 function presetCandidates(session: ModelPresetSession): Model[] {
-	const scoped = session.scopedModels.map(entry => entry.model);
-	return scoped.length > 0 ? scoped : session.getAvailableModels();
+	const scoped = session.scopedModels;
+	return scoped.length > 0 ? scopeAllowList(scoped) : session.getAvailableModels();
 }
 
 function errorMessage(error: unknown): string {
