@@ -222,7 +222,7 @@ pub fn malformed_header_row_message(text: &str) -> String {
 		 written. Ops: `PUT N.=M:`, `PUT N*:`, `PUT <N:`, `PUT >N:`, `CUT N.=M`, `CUT N*`, `REM`, \
 		 `MV DEST`; a file header is `[PATH#TAG]` alone at the start of a line. If the row is \
 		 literal file content, prefix it with `+`.",
-		json_quote(text)
+		preview_row(text)
 	)
 }
 

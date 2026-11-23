@@ -15,7 +15,7 @@ use super::{
 		self, BARE_BODY_AUTO_PIPED_WARNING, BARE_RANGE_AUTO_PUT_WARNING, COLON_ON_REGISTER_PUT,
 		COLONLESS_PUT_TAKES_NO_BODY, COLONLESS_SPAN_PUT, CUT_COLON_IGNORED_WARNING,
 		CUT_TAKES_NO_BODY, DIFF_OLD_ROWS_IGNORED_WARNING, EMPTY_INSERT, EMPTY_PUT_AUTO_CUT_WARNING,
-		MALFORMED_OP_HEADER, MINUS_BULLET_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED, MOVE_TAKES_NO_BODY,
+		MINUS_BULLET_AUTO_PIPED_WARNING, MINUS_ROW_REJECTED, MOVE_TAKES_NO_BODY,
 		READ_METADATA_IGNORED_WARNING, REGISTER_PUT_TAKES_NO_BODY, REM_TAKES_NO_BODY,
 		REPLACE_PAIR_COALESCED_WARNING, SNAPSHOT_ROWS_AUTO_PUT_WARNING,
 	},
@@ -358,11 +358,8 @@ impl Executor {
 			// half-typed header, which `finish(streaming)` must discard rather
 			// than error on and hide the valid edits before it.
 			if is_malformed_op_header(text) {
-				self.deferred_malformed = fail_at::<()>(
-					line_num,
-					&format!("{} Got {}.", MALFORMED_OP_HEADER, messages::preview_row(text)),
-				)
-				.err();
+				self.deferred_malformed =
+					fail_at::<()>(line_num, &messages::malformed_header_row_message(text)).err();
 				return Ok(());
 			}
 			if HEADER_SHAPED_RE.is_match(text) {

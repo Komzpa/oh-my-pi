@@ -498,7 +498,7 @@ fn malformed_put_op_headers_fail_instead_of_becoming_body() {
 	let error = parse_patch("[a.ts]\nPUT 3.=4:\n+ok\nPUT 351*=357\n+bad")
 		.unwrap_err()
 		.to_string();
-	assert!(error.contains("malformed operation header"), "{error}");
+	assert!(error.contains("looks like a hunk or file header"), "{error}");
 	assert!(error.contains("line 4"), "{error}");
 	// With no hunk open the row fails with the legacy message, which the
 	// legacy parity fixtures pin byte-for-byte.
@@ -527,7 +527,7 @@ fn malformed_header_echo_is_bounded() {
 	let error = parse_patch(&format!("PUT 3.=4:\n+ok\n{row}\n+bad"))
 		.unwrap_err()
 		.to_string();
-	assert!(error.contains("malformed operation header"), "{error}");
+	assert!(error.contains("looks like a hunk or file header"), "{error}");
 	assert!(error.chars().count() < 400, "{}", error.chars().count());
 }
 
