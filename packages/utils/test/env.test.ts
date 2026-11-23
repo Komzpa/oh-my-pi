@@ -15,7 +15,6 @@ import {
 	stripGitRepoLocationEnv,
 	stripNodeIpcChannelEnv,
 	withOmpOtelEnv,
-	stripNodeIpcChannelEnv,
 } from "@oh-my-pi/pi-utils/env";
 
 const tempDirs: string[] = [];

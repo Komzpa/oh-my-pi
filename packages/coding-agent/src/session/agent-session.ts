@@ -614,7 +614,6 @@ const TITLE_DRIFT_JUDGE_TIMEOUT_MS = 15_000;
 
 import { bindProviderAvailabilityNotices } from "./provider-availability-notice";
 import { StallGuard, stalledWaiters } from "./stalled-waiters";
-import { bindProviderAvailabilityNotices } from "./provider-availability-notice";
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
 import { AutoParallelCoordinator } from "./auto-parallel";
 import { EAGER_TODO_PRELUDE_MESSAGE_TYPE, TodoTracker, type TodoTrackerHost } from "./todo-tracker";
