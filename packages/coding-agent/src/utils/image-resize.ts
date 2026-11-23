@@ -176,6 +176,56 @@ async function readRgba(image: Bun.Image): Promise<RgbaPixels | undefined> {
 	return { width, height, pixels };
 }
 
+/** GIF, WebP with an `ANIM` chunk, or APNG (`acTL` before the first `IDAT`). */
+function mayBeAnimated(bytes: Uint8Array): boolean {
+	const head = Buffer.from(bytes.subarray(0, 4096)).toString("latin1");
+	if (head.startsWith("GIF8")) return true;
+	if (head.startsWith("RIFF") && head.slice(8, 12) === "WEBP") return head.includes("ANIM");
+	const idat = head.indexOf("IDAT");
+	return head.startsWith("\x89PNG") && head.indexOf("acTL") !== -1 && (idat === -1 || head.indexOf("acTL") < idat);
+}
+
+/**
+ * Reject empty images only after checking every pixel; sparse content must survive.
+ * Accept the full-resolution RGBA allocation: downsampling can erase the only visible pixel.
+ */
+export async function inspectImageContent(bytes: Uint8Array): Promise<ImageContentInspection> {
+	// Decoding yields the first frame only; a later frame of an animation may hold the content.
+	if (mayBeAnimated(bytes)) return undefined;
+	try {
+		const decoded = await readRgba(new Bun.Image(bytes));
+		if (!decoded) return undefined;
+		const { width, height, pixels } = decoded;
+		let firstR = -1;
+		let firstG = -1;
+		let firstB = -1;
+		let firstA = -1;
+		let fullyTransparent = true;
+		let sameColor = true;
+		for (let pixel = 0; pixel < width * height; pixel++) {
+			const offset = pixel * 4;
+			const r = pixels[offset]!;
+			const g = pixels[offset + 1]!;
+			const b = pixels[offset + 2]!;
+			const a = pixels[offset + 3]!;
+			if (a !== 0) fullyTransparent = false;
+			if (firstA < 0) {
+				firstR = r;
+				firstG = g;
+				firstB = b;
+				firstA = a;
+			} else if (r !== firstR || g !== firstG || b !== firstB || a !== firstA) sameColor = false;
+			if (!fullyTransparent && !sameColor) return undefined;
+		}
+		if (fullyTransparent) return { width, height, kind: "transparent" };
+		if (!sameColor) return undefined;
+		const hex = [firstR, firstG, firstB].map(channel => channel.toString(16).padStart(2, "0")).join("");
+		return { width, height, kind: "solid", color: `#${hex}` };
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Reject empty images only after checking every pixel; sparse content must survive.
  * Accept the full-resolution RGBA allocation: downsampling can erase the only visible pixel.
