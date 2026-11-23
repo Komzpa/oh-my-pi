@@ -396,6 +396,9 @@ export const getModelsConfigSchemaBundle = once(() => {
 		 */
 		"advertisedReasoning?": "boolean",
 	}).narrow((value, ctx) => {
+		if ((value.modelsUrl !== undefined || value.includeHidden !== undefined) && value.type !== "openai-models-list") {
+			return ctx.mustBe("modelsUrl and includeHidden only on openai-models-list discovery");
+		}
 		if (value.injectV1 !== undefined && value.type !== "openai-models-list") {
 			return ctx.mustBe("injectV1 only on openai-models-list discovery");
 		}
