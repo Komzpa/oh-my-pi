@@ -222,6 +222,26 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 			expect(extractEmbeddedAddons({ files, targetDir: testDir })).toEqual([]);
 		});
 
+		it("re-extracts when another build prunes the directory mid-extraction", async () => {
+			// A second build of the same version starting meanwhile removes every
+			// `embedded-<hash>` directory but its own (pruneStaleEmbeddedAddons),
+			// taking our temp file with it before the rename.
+			testDir = await fs.mkdtemp(path.join(os.tmpdir(), "natives-embedded-pruned-"));
+			const file = await embeddedFile("modern", "pi_natives.linux-x64-modern.node", "cc03", "addon from build C");
+			const rename = nodeFs.renameSync;
+			let removed: string[] = [];
+			spyOn(nodeFs, "renameSync").mockImplementation((from, to) => {
+				if (removed.length === 0) removed = pruneStaleEmbeddedAddons({ targetDir: testDir, keepHashes: ["dddd"] });
+				return rename(from, to);
+			});
+
+			expect(extractEmbeddedAddons({ files: [file], targetDir: testDir })).toEqual([
+				embeddedAddonPath(testDir, file),
+			]);
+			expect(removed).toEqual([path.dirname(embeddedAddonPath(testDir, file))]);
+			expect(await Bun.file(embeddedAddonPath(testDir, file)).text()).toBe("addon from build C");
+		});
+
 		it("keeps same-size builds of one version apart, so neither ever loads the other's addon", async () => {
 			// Two builds of one version whose addons have identical sizes: what a
 			// rebuild routinely produces, and what a shared cache path could not
