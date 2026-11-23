@@ -80,19 +80,7 @@ fn brace_fallback_for(lang: Option<&str>, path: Option<&str>) -> bool {
 /// skipped so they never open or close a group; so are regular-expression
 /// literals (`/}/`, `/[{]/`), recognised by the token before the `/` (an
 /// operator or opener rather than an operand, which would make it a division).
-/// Byte range from the start of 1-indexed `start_line` to the end of
-/// `end_line`, excluding its newline.
-fn line_byte_span(code: &str, start_line: u32, end_line: u32) -> Range<usize> {
-	let mut starts = std::iter::once(0).chain(code.match_indices('\n').map(|(at, _)| at + 1));
-	let start = starts.nth((start_line - 1) as usize).unwrap_or(code.len());
-	let end = code[start..]
-		.match_indices('\n')
-		.nth((end_line - start_line) as usize)
-		.map_or(code.len(), |(at, _)| start + at);
-	start..end
-}
-
-fn brace_block_span(code: &str, line: u32) -> Option<BlockRange> {
+fn brace_block_span(code: &str, line: u32) -> Option<(BlockRange, Range<usize>)> {
 	if line == 0 {
 		return None;
 	}
@@ -111,6 +99,8 @@ fn brace_block_span(code: &str, line: u32) -> Option<BlockRange> {
 	// literal from a division.
 	let mut prev = 0u8;
 	let mut i = 0usize;
+	let mut line_start = 0usize;
+	let mut opener_start = 0usize;
 	while i < bytes.len() {
 		let byte = bytes[i];
 		let next = bytes.get(i + 1).copied().unwrap_or(0);
@@ -122,6 +112,7 @@ fn brace_block_span(code: &str, line: u32) -> Option<BlockRange> {
 			regex_class = false;
 			escaped = false;
 			i += 1;
+			line_start = i;
 			continue;
 		}
 		if line_comment {
@@ -202,6 +193,7 @@ fn brace_block_span(code: &str, line: u32) -> Option<BlockRange> {
 			},
 			b'{' if !opener && row == target => {
 				opener = true;
+				opener_start = line_start;
 				depth = 1;
 				i += 1;
 			},
@@ -212,7 +204,11 @@ fn brace_block_span(code: &str, line: u32) -> Option<BlockRange> {
 			b'}' if opener => {
 				depth -= 1;
 				if depth == 0 {
-					return Some(BlockRange { start_line: line, end_line: row as u32 + 1 });
+					let start = opener_start + first_content_column(code, target)?;
+					return Some((
+						BlockRange { start_line: line, end_line: row as u32 + 1 },
+						start..i + 1,
+					));
 				}
 				i += 1;
 			},
@@ -279,10 +275,7 @@ fn resolve_block(
 		// groups (QML) resolve by matching; a truly unrecognized extension
 		// keeps resolving to nothing.
 		return if brace_fallback_for(lang, path) {
-			Ok(brace_block_span(code, line).map(|lines| {
-				let bytes = line_byte_span(code, lines.start_line, lines.end_line);
-				(lines, bytes)
-			}))
+			Ok(brace_block_span(code, line))
 		} else {
 			Ok(None)
 		};

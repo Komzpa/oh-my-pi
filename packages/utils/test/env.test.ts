@@ -13,8 +13,8 @@ import {
 	parseEnvFile,
 	setInteractiveHost,
 	stripGitRepoLocationEnv,
-	withOmpOtelEnv,
 	stripNodeIpcChannelEnv,
+	withOmpOtelEnv,
 } from "@oh-my-pi/pi-utils/env";
 
 const tempDirs: string[] = [];
