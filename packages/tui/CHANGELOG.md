@@ -24,6 +24,7 @@
 - The `vim` status-line segment shows a pending command even with `display: "none"`, which now hides only the mode ([#20037](https://github.com/can1357/oh-my-pi/pull/20037) by [@lericson](https://github.com/lericson))
 - Added `AGENT_KILL_LABEL`, `InterruptReason` and `isInterruptReason` so hosts can tell a parent agent's kill apart from a user interrupt ([#20012](https://github.com/can1357/oh-my-pi/pull/20012) by [@nick-maderight](https://github.com/nick-maderight))
 - Render gaps longer than two seconds now log a bounded pipeline timeline for diagnosis.
+- Added optional runtime HUD/input allocation against rendered sibling rows in normal and resize Composer frames ([#16520](https://github.com/can1357/oh-my-pi/pull/16520) by [@Komzpa](https://github.com/Komzpa))
 
 ### Fixed
 
