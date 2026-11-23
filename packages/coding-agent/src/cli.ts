@@ -200,10 +200,12 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestSubagentWorker } = await import("./thread/subagent-worker");
 	// Every smoke that reaches the daemon must start this build's own, never the user's live one.
 	const cleanupDaemon = await isolateDaemonForSmokeTest();
+	const { smokeTestPersistedHistoryWorker } = await import("./registry/persisted-history-client");
 	try {
 		await smokeTestSyncWorker();
 		await smokeTestSpotlightWorker();
 		await smokeTestStatsActivityWorker();
+		await smokeTestPersistedHistoryWorker();
 		await smokeTestTranscriptIndexWorker();
 		const snapshots: typeof RestartSnapshotWorker = require("./task/restart-snapshot-worker");
 		await snapshots.smokeTestRestartSnapshotWorker();
