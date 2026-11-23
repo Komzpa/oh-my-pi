@@ -75,17 +75,6 @@ Provider requests must shrink already-executed tool history without changing per
 
 The full argument values and tool-result text remain available in the session file. Shrinking is a request-only view, never a replacement for execution arguments or persisted history.
 
-### Oversized tool history at the provider boundary
-
-Provider requests must shrink already-executed tool history without changing persisted session entries or their full values:
-
-- Completed tool calls' nested argument strings exceeding 16 KiB of UTF-8 bytes are replaced with `[omitted <N> bytes, sha256=<hex12>; full value kept in the session file]` in every turn, including the current one, in both normalized calls and native provider replay copies. Tool-call IDs, names, matching results, and unrelated signed or encrypted reasoning remain intact. A pending call (no result yet) remains unchanged; once its result exists, the next request shrinks it.
-- Tool-result text exceeding 256 KiB keeps its first and last 8 KiB with an omission marker between them. Results are eligible only before the latest real user turn; the current turn's results stay full. UTF-8 characters must remain valid.
-- Advancing to a new user turn must update cached conversion eligibility for results without rewriting history. Argument strings at or below 16 KiB remain unchanged during normal conversion.
-- If overflow repeats immediately after recovery compaction, the next request applies result shrinking across the whole active context and retries once. A further overflow surfaces as an error and must not restart the recovery loop.
-
-The full argument values and tool-result text remain available in the session file. Shrinking is a request-only view, never a replacement for execution arguments or persisted history.
-
 ## Compaction pipeline
 
 ### Triggers
