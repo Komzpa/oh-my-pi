@@ -212,6 +212,7 @@
 
 - Rereading an unchanged skill file that is already in the current context now returns a short stub instead of repeating it; `?full` still returns the whole file ([#16521](https://github.com/can1357/oh-my-pi/pull/16521) by [@Komzpa](https://github.com/Komzpa))
 - Fixed the collapsed TODO panel previewing only the current phase: it now lists open rows across all phases (in-progress, then pending) that fit the terminal, no longer draws completed rows while open work exists, and reports the rest with the real `/todo expand` hint ([#16520](https://github.com/can1357/oh-my-pi/pull/16520) by [@Komzpa](https://github.com/Komzpa))
+- Fixed context note saves being rejected when the session only gained entries while the note was being written to disk; switching branches still rejects a stale save ([#16519](https://github.com/can1357/oh-my-pi/pull/16519) by [@Komzpa](https://github.com/Komzpa))
 
 ## [19.1.0] - 2026-11-21
 
