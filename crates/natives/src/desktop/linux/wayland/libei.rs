@@ -1150,6 +1150,7 @@ fn evdev_char(character: char) -> Option<(u32, bool)> {
 #[cfg(test)]
 mod tests {
 	use std::{
+		os::unix::net::UnixStream,
 		sync::{
 			Arc,
 			atomic::{AtomicBool, Ordering},
