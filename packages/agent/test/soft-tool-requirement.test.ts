@@ -169,7 +169,14 @@ describe("agentLoop soft tool requirement", () => {
 		expect(h.resolveRuns).toBe(0);
 		expect(mock.calls[0]?.options?.toolChoice).toBeUndefined();
 		expect(mock.calls[1]?.options?.toolChoice).toBe("required");
-		expect(mock.calls[1]?.context.tools?.map(tool => tool.name)).toEqual(["resolve", "peek", "read", "write", "bash", "todo"]);
+		expect(mock.calls[1]?.context.tools?.map(tool => tool.name)).toEqual([
+			"resolve",
+			"peek",
+			"read",
+			"write",
+			"bash",
+			"todo",
+		]);
 		expect(mock.calls[2]?.options?.toolChoice).toBeUndefined();
 	});
 	it("never forces tool_choice when the model complies with the reminder", async () => {
