@@ -1236,6 +1236,12 @@ function withoutReasoning(spec: ModelSpec<Api>, isAnthropic: boolean): ModelSpec
 	} as ModelSpec<Api>;
 }
 
+/** Native catalogs mark unlisted rows `hide` or `hidden`, in any case. */
+function isHiddenVisibility(value: unknown): boolean {
+	const visibility = typeof value === "string" ? value.trim().toLowerCase() : "";
+	return visibility === "hide" || visibility === "hidden";
+}
+
 export async function discoverOpenAIModelsList(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
@@ -1330,7 +1336,7 @@ export async function discoverOpenAIModelsList(
 			.filter(
 				item =>
 					item.supported_in_api !== false &&
-					(item.visibility !== "hide" || providerConfig.discovery.includeHidden === true),
+					(!isHiddenVisibility(item.visibility) || providerConfig.discovery.includeHidden === true),
 			)
 			.map(item => ({ ...item, id: item.slug, metadata: item }));
 	const references = getBundledModelReferenceIndex();

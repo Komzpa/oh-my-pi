@@ -138,6 +138,8 @@ describe("explicit spawn model resolution fails closed", () => {
 
 	it("keeps the role chain when the unresolved patterns were inherited from the parent session", async () => {
 		const session = createMockSession();
+		// The role chain resolved a model for the child; only the parent's pattern missed.
+		(session as unknown as { model: Model }).model = GPT as unknown as Model;
 		const prompt = vi.spyOn(session, "prompt");
 		mockCreateAgentSession(session, "Model not found");
 		const result = await runSubprocess({

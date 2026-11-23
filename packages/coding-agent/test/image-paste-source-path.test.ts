@@ -150,14 +150,14 @@ describe("path-pasted image source path (#12244)", () => {
 		return { editor, imagePath };
 	}
 
-	async function pasteClipboardImage(bytes: Uint8Array) {
+	async function pasteClipboardImage(bytes: Uint8Array, mimeType = "image/png") {
 		if (!session) throw new Error("Session was not initialized");
 		cfgImagesAutoResize.set(settings, false);
 		const sessionManager = SessionManager.create(tmpDir, path.join(tmpDir, "paste-sessions"));
 		const { ctx, editor, showStatus } = createPasteContext(sessionManager);
 		const imageBytes = Buffer.from(bytes);
 		const controller = new InputController(ctx, {
-			readImage: async () => ({ data: imageBytes, mimeType: "image/png" }),
+			readImage: async () => ({ data: imageBytes, mimeType }),
 			readText: async () => "",
 		});
 		await controller.handleImagePaste();
@@ -209,6 +209,57 @@ describe("path-pasted image source path (#12244)", () => {
 			);
 			expect(await Bun.file(savedPath).exists()).toBe(false);
 		}
+	});
+
+	it("attaches an animated GIF whose first frame is blank", async () => {
+		const frame = (index: number) => [
+			0x21,
+			0xf9,
+			0x04,
+			0x00,
+			0x0a,
+			0x00,
+			0x00,
+			0x00,
+			0x2c,
+			0,
+			0,
+			0,
+			0,
+			1,
+			0,
+			1,
+			0,
+			0,
+			0x02,
+			0x02,
+			index ? 0x4c : 0x44,
+			0x01,
+			0x00,
+		];
+		const gif = Buffer.from([
+			...Buffer.from("GIF89a"),
+			0x01,
+			0x00,
+			0x01,
+			0x00,
+			0x80,
+			0x00,
+			0x00,
+			0xff,
+			0xff,
+			0xff,
+			0xff,
+			0x00,
+			0x00,
+			...frame(0),
+			...frame(1),
+			0x3b,
+		]);
+		const { editor, showStatus } = await pasteClipboardImage(gif, "image/gif");
+
+		expect(editor.pendingImages).toHaveLength(1);
+		expect(showStatus).not.toHaveBeenCalledWith(expect.stringContaining("is empty"));
 	});
 
 	it("attaches a non-blank clipboard image with its original bytes", async () => {

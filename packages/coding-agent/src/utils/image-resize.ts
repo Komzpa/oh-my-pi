@@ -176,11 +176,22 @@ async function readRgba(image: Bun.Image): Promise<RgbaPixels | undefined> {
 	return { width, height, pixels };
 }
 
+/** GIF, WebP with an `ANIM` chunk, or APNG (`acTL` before the first `IDAT`). */
+function mayBeAnimated(bytes: Uint8Array): boolean {
+	const head = Buffer.from(bytes.subarray(0, 4096)).toString("latin1");
+	if (head.startsWith("GIF8")) return true;
+	if (head.startsWith("RIFF") && head.slice(8, 12) === "WEBP") return head.includes("ANIM");
+	const idat = head.indexOf("IDAT");
+	return head.startsWith("\x89PNG") && head.indexOf("acTL") !== -1 && (idat === -1 || head.indexOf("acTL") < idat);
+}
+
 /**
  * Reject empty images only after checking every pixel; sparse content must survive.
  * Accept the full-resolution RGBA allocation: downsampling can erase the only visible pixel.
  */
 export async function inspectImageContent(bytes: Uint8Array): Promise<ImageContentInspection> {
+	// Decoding yields the first frame only; a later frame of an animation may hold the content.
+	if (mayBeAnimated(bytes)) return undefined;
 	try {
 		const decoded = await readRgba(new Bun.Image(bytes));
 		if (!decoded) return undefined;

@@ -2178,10 +2178,12 @@ export class TurnRecovery {
 	 * HTTP/2 stream reset, a gateway close without the terminal event, or a
 	 * truncated stream envelope. A premature close (no finish_reason/terminal
 	 * event) and an envelope that never reached its terminal frame — including a
-	 * gateway in-band `error` frame or a Responses `stream_incomplete` error
-	 * for an upstream websocket closed before `response.completed` — are the
-	 * same failure class as a stall or reset. Resets and closes are ignored
-	 * while a deliberate abort, disposal, or streaming-edit abort owns the stream.
+	 * gateway's in-band `error` frame, which the provider reports as the same
+	 * envelope truncation — are the same failure class as a stall or reset, and
+	 * so is a Responses transport drop the provider or a proxy reports in its own
+	 * words (a `stream_incomplete` error event for an upstream websocket that
+	 * closed before `response.completed`). Resets and closes are ignored while a
+	 * deliberate abort, disposal, or streaming-edit abort owns the stream.
 	 */
 	#isMidStreamTransportFailure(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;

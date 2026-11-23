@@ -415,6 +415,8 @@ interface WorkPoolReservation {
 export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	readonly name = "yield";
 	readonly approval = "read" as const;
+	/** Read tier is authorization only; this tool must not run as a soft-requirement detour. */
+	readonly softRequirementDetour = false;
 	readonly label = "Submit Result";
 	readonly intent = "omit" as const;
 	lenientArgValidation = true;
