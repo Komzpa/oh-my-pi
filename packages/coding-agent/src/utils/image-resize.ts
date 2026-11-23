@@ -227,45 +227,6 @@ export async function inspectImageContent(bytes: Uint8Array): Promise<ImageConte
 }
 
 /**
- * Reject empty images only after checking every pixel; sparse content must survive.
- * Accept the full-resolution RGBA allocation: downsampling can erase the only visible pixel.
- */
-export async function inspectImageContent(bytes: Uint8Array): Promise<ImageContentInspection> {
-	try {
-		const decoded = await readRgba(new Bun.Image(bytes));
-		if (!decoded) return undefined;
-		const { width, height, pixels } = decoded;
-		let firstR = -1;
-		let firstG = -1;
-		let firstB = -1;
-		let firstA = -1;
-		let fullyTransparent = true;
-		let sameColor = true;
-		for (let pixel = 0; pixel < width * height; pixel++) {
-			const offset = pixel * 4;
-			const r = pixels[offset]!;
-			const g = pixels[offset + 1]!;
-			const b = pixels[offset + 2]!;
-			const a = pixels[offset + 3]!;
-			if (a !== 0) fullyTransparent = false;
-			if (firstA < 0) {
-				firstR = r;
-				firstG = g;
-				firstB = b;
-				firstA = a;
-			} else if (r !== firstR || g !== firstG || b !== firstB || a !== firstA) sameColor = false;
-			if (!fullyTransparent && !sameColor) return undefined;
-		}
-		if (fullyTransparent) return { width, height, kind: "transparent" };
-		if (!sameColor) return undefined;
-		const hex = [firstR, firstG, firstB].map(channel => channel.toString(16).padStart(2, "0")).join("");
-		return { width, height, kind: "solid", color: `#${hex}` };
-	} catch {
-		return undefined;
-	}
-}
-
-/**
  * `input` with its color premultiplied by alpha, as an uncompressed PNG for `Bun.Image` to
  * resample, when some pixel is translucent; `undefined` when every pixel is opaque.
  */
